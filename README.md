@@ -43,15 +43,19 @@ cgo must be enabled (`CGO_ENABLED=1`, the default when building for the same
 OS) with a C compiler. The first build compiles libvsql, which takes about 20
 seconds, after that it's cached by Go.
 
-For now, only macOS on ARM64 is supported. The other platforms will be added
-from the vsql amalgamation release.
+For now, only macOS (ARM64 and x86-64) is supported. The amalgamation also has
+the C for Linux and Windows, but on Linux the garbage collector can't stop the
+threads that Go has called libvsql from, and Windows hasn't been tried yet.
 
 ## Updating vsql
 
 `internal/amalgamation` is the libvsql C from a vsql release
-(`vsql-VERSION-amalgamation.zip`). To update it:
+(`vsql-VERSION-amalgamation.zip`). To update it to the latest release:
 
 ```sh
-scripts/update-amalgamation.sh vsql-v1.2.3-amalgamation.zip
+scripts/update-amalgamation.sh
 go test ./...
 ```
+
+Or give a version (`scripts/update-amalgamation.sh v1.2.3`), or a zip that has
+already been downloaded.

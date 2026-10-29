@@ -7,8 +7,11 @@ package vsql
 // Values that libvsql reads after a routine returns (such as the parameters of
 // SQLBindParameter, which are read by SQLExecute) are allocated with C.malloc,
 // since C can't keep a Go pointer.
+//
+// The C that V generates for Linux passes a pthread_t as a void*, which is an
+// error from GCC 14 unless -Wno-int-conversion is given.
 
-// #cgo CFLAGS: -I${SRCDIR}/../internal/amalgamation -std=gnu11 -w
+// #cgo CFLAGS: -I${SRCDIR}/../internal/amalgamation -std=gnu11 -w -Wno-int-conversion
 // #include <stdlib.h>
 // #include "libvsql.h"
 import "C"

@@ -2,8 +2,11 @@
 
 # update-amalgamation.sh replaces the libvsql C in internal/amalgamation with
 # the C from a vsql amalgamation (vsql-VERSION-amalgamation.zip from a vsql
-# release, or the folder it unzips to):
+# release, or the folder it unzips to). With no arguments, or a version, the zip
+# is downloaded from the latest (or that) vsql release:
 #
+#   scripts/update-amalgamation.sh
+#   scripts/update-amalgamation.sh v1.2.3
 #   scripts/update-amalgamation.sh vsql-v1.2.3-amalgamation.zip
 #
 # Only what's needed to compile libvsql is copied (not vsql, the command line
@@ -16,15 +19,28 @@
 
 set -euo pipefail
 
-source="$1"
+source="${1:-latest}"
 root="$(cd "$(dirname "$0")/.." && pwd)"
 out="$root/internal/amalgamation"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
+if [ ! -e "$source" ]; then
+  version="$source"
+  if [ "$version" = latest ]; then
+    version="$(curl -fsSL https://api.github.com/repos/elliotchance/vsql/releases/latest |
+      sed -n 's/^ *"tag_name": *"\(.*\)",$/\1/p')"
+  fi
+  zip="vsql-$version-amalgamation.zip"
+  echo "Downloading $zip"
+  curl -fsSL -o "$tmp/$zip" \
+    "https://github.com/elliotchance/vsql/releases/download/$version/$zip"
+  source="$tmp/$zip"
+fi
+
 if [ -f "$source" ]; then
-  unzip -q "$source" -d "$tmp"
-  source="$(dirname "$(find "$tmp" -name libvsql.h | head -1)")"
+  unzip -q "$source" -d "$tmp/unzipped"
+  source="$(dirname "$(find "$tmp/unzipped" -name libvsql.h | head -1)")"
 fi
 
 if [ ! -f "$source/libvsql.h" ] || [ ! -f "$source/libvsql.c" ]; then
@@ -66,6 +82,8 @@ flags="$root/vsql/cgo_flags.go"
     ldflags=""
     for arg in $(sed -n 's/^LIBVSQL_FLAGS *= *//p' "$mk"); do
       case "$arg" in
+        # Options for linking libvsql as a shared library.
+        -Wl,*) ;;
         -D*) cflags="$cflags $arg" ;;
         *) ldflags="$ldflags $arg" ;;
       esac
@@ -79,4 +97,4 @@ flags="$root/vsql/cgo_flags.go"
 } > "$flags"
 gofmt -l "$flags" > /dev/null
 
-echo "Updated $out and $flags from $1"
+echo "Updated $out and $flags from ${1:-the latest release}"
