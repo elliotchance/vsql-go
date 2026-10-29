@@ -14,6 +14,7 @@ package vsql
 // #cgo CFLAGS: -I${SRCDIR}/../internal/amalgamation -std=gnu11 -w -Wno-int-conversion
 // #include <stdlib.h>
 // #include "libvsql.h"
+// void vsql_gc_after_go_init(void);
 import "C"
 
 import (
@@ -29,6 +30,12 @@ type (
 )
 
 var errInvalidHandle = errors.New("vsql: invalid handle")
+
+// Package initialization runs on the main thread, after the Go runtime has
+// installed its signal handlers (see vsql_runtime.c).
+func init() {
+	C.vsql_gc_after_go_init()
+}
 
 // check is the error for a return code, with the diagnostics of the handle.
 // SQL_NO_DATA isn't an error.
