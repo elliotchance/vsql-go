@@ -1,0 +1,40 @@
+name: Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    name: ${{ matrix.os }} (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: Linux
+            arch: x86-64
+            runner: ubuntu-latest
+          - os: Linux
+            arch: ARM64
+            runner: ubuntu-24.04-arm
+          - os: macOS
+            arch: x86-64
+            runner: macos-15-intel
+          - os: macOS
+            arch: ARM64
+            runner: macos-latest
+          - os: Windows
+            arch: x86-64
+            runner: windows-latest
+          - os: Windows
+            arch: ARM64
+            runner: windows-11-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+      - run: go vet ./...
+      - run: go test -race ./...
