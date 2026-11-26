@@ -75,9 +75,39 @@ func diagnostics(handleType C.SQLSMALLINT, handle C.SQLINTEGER) error {
 		}
 
 		return &Error{
-			SQLState: SQLState(C.GoStringN((*C.char)(unsafe.Pointer(&sqlstate[0])), 5)),
-			Message:  C.GoStringN((*C.char)(unsafe.Pointer(&message[0])), C.int(length)),
+			SQLState:          SQLState(C.GoStringN((*C.char)(unsafe.Pointer(&sqlstate[0])), 5)),
+			Message:           C.GoStringN((*C.char)(unsafe.Pointer(&message[0])), C.int(length)),
+			ConstraintCatalog: diagString(handleType, handle, C.SQL_DIAG_CONSTRAINT_CATALOG),
+			ConstraintSchema:  diagString(handleType, handle, C.SQL_DIAG_CONSTRAINT_SCHEMA),
+			ConstraintName:    diagString(handleType, handle, C.SQL_DIAG_CONSTRAINT_NAME),
+			CatalogName:       diagString(handleType, handle, C.SQL_DIAG_CATALOG_NAME),
+			SchemaName:        diagString(handleType, handle, C.SQL_DIAG_SCHEMA_NAME),
+			TableName:         diagString(handleType, handle, C.SQL_DIAG_TABLE_NAME),
+			ColumnName:        diagString(handleType, handle, C.SQL_DIAG_COLUMN_NAME),
+			CursorName:        diagString(handleType, handle, C.SQL_DIAG_CURSOR_NAME),
 		}
+	}
+}
+
+// diagString is a string field of the first diagnostic record, or "" if it
+// can't be read.
+func diagString(handleType C.SQLSMALLINT, handle C.SQLINTEGER, field C.SQLSMALLINT) string {
+	value := make([]C.SQLCHAR, 129)
+	var length C.SQLSMALLINT
+	for {
+		rc := C.SQLGetDiagField(handleType, handle, 1, field, C.SQLPOINTER(unsafe.Pointer(&value[0])),
+			C.SQLSMALLINT(len(value)), &length)
+		if rc != C.SQL_SUCCESS && rc != C.SQL_SUCCESS_WITH_INFO {
+			return ""
+		}
+
+		// The value was truncated.
+		if int(length) >= len(value) {
+			value = make([]C.SQLCHAR, int(length)+1)
+			continue
+		}
+
+		return C.GoStringN((*C.char)(unsafe.Pointer(&value[0])), C.int(length))
 	}
 }
 
@@ -168,6 +198,54 @@ func (h dbcHandle) endTran(commit bool) error {
 	return h.check(C.SQLEndTran(C.SQL_HANDLE_DBC, C.SQLINTEGER(h), completion))
 }
 
+// rollbackToSavepoint rolls back to a savepoint of the active transaction.
+// The name is an identifier, as it's written in SQL (so a delimited identifier
+// is in double quotes).
+func (h dbcHandle) rollbackToSavepoint(name string) error {
+	cname := C.CString(name)
+	defer C.free(unsafe.Pointer(cname))
+	err := h.check(C.SQLSetConnectAttr(C.SQLHDBC(h), C.SQL_ATTR_SAVEPOINT_NAME,
+		C.SQLPOINTER(unsafe.Pointer(cname)), C.SQL_NTS))
+	if err != nil {
+		return err
+	}
+
+	return h.check(C.SQLEndTran(C.SQL_HANDLE_DBC, C.SQLINTEGER(h), C.SQL_SAVEPOINT_NAME_ROLLBACK))
+}
+
+// Build information for getInfoString.
+const (
+	infoBuildVersion    = C.SQL_VSQL_BUILD_VERSION
+	infoBuildCommit     = C.SQL_VSQL_BUILD_COMMIT
+	infoBuildDate       = C.SQL_VSQL_BUILD_DATE
+	infoBuildVVersion   = C.SQL_VSQL_BUILD_V_VERSION
+	infoBuildVCommit    = C.SQL_VSQL_BUILD_V_COMMIT
+	infoBuildCCompiler  = C.SQL_VSQL_BUILD_C_COMPILER
+	infoOperatingSystem = C.SQL_VSQL_OPERATING_SYSTEM
+	infoMachine         = C.SQL_VSQL_MACHINE
+)
+
+// getInfoString reads a string with SQLGetInfo.
+func (h dbcHandle) getInfoString(infoType int) (string, error) {
+	value := make([]C.SQLCHAR, 129)
+	var length C.SQLSMALLINT
+	for {
+		err := h.check(C.SQLGetInfo(C.SQLHDBC(h), C.SQLSMALLINT(infoType),
+			C.SQLPOINTER(unsafe.Pointer(&value[0])), C.SQLSMALLINT(len(value)), &length))
+		if err != nil {
+			return "", err
+		}
+
+		// The value was truncated.
+		if int(length) >= len(value) {
+			value = make([]C.SQLCHAR, int(length)+1)
+			continue
+		}
+
+		return C.GoStringN((*C.char)(unsafe.Pointer(&value[0])), C.int(length)), nil
+	}
+}
+
 func (h dbcHandle) allocStmt() (stmtHandle, error) {
 	var stmt C.SQLHSTMT
 	if err := h.check(C.SQLAllocHandle(C.SQL_HANDLE_STMT, C.SQLINTEGER(h), &stmt)); err != nil {
@@ -195,6 +273,40 @@ func (h stmtHandle) prepare(query string) error {
 
 	return h.check(C.SQLPrepare(C.SQLHSTMT(h), (*C.SQLCHAR)(unsafe.Pointer(cquery)),
 		C.SQLINTEGER(len(query))))
+}
+
+// paramTypes is the data type of each dynamic parameter of a prepared
+// statement, from the IPD (which libvsql fills in when it's prepared). A type
+// that isn't known until the statement is executed is 0.
+func (h stmtHandle) paramTypes() ([]int, error) {
+	var ipd C.SQLHDESC
+	err := h.check(C.SQLGetStmtAttr(C.SQLHSTMT(h), C.SQL_ATTR_IMP_PARAM_DESC,
+		C.SQLPOINTER(unsafe.Pointer(&ipd)), 0, nil))
+	if err != nil {
+		return nil, err
+	}
+
+	checkDesc := func(rc C.SQLRETURN) error {
+		return check(rc, C.SQL_HANDLE_DESC, C.SQLINTEGER(ipd))
+	}
+	var count C.SQLSMALLINT
+	if err := checkDesc(C.SQLGetDescField(ipd, 0, C.SQL_DESC_COUNT,
+		C.SQLPOINTER(unsafe.Pointer(&count)), 0, nil)); err != nil {
+		return nil, err
+	}
+
+	types := make([]int, count)
+	for i := range types {
+		var dataType C.SQLSMALLINT
+		rc := C.SQLGetDescField(ipd, C.SQLSMALLINT(i+1), C.SQL_DESC_TYPE,
+			C.SQLPOINTER(unsafe.Pointer(&dataType)), 0, nil)
+		// A field that was never set (HY091) is an unknown type.
+		if rc == C.SQL_SUCCESS || rc == C.SQL_SUCCESS_WITH_INFO {
+			types[i] = int(dataType)
+		}
+	}
+
+	return types, nil
 }
 
 // execute executes the prepared statement with the parameters, which are
@@ -225,6 +337,13 @@ func (h stmtHandle) execute(params []param) error {
 			value = C.malloc(C.sizeof_SQLDOUBLE)
 			*(*C.SQLDOUBLE)(value) = C.SQLDOUBLE(p.f)
 			bufferLength = C.sizeof_SQLDOUBLE
+		case p.valueType == C.SQL_BINARY:
+			// A binary string isn't null-terminated, and its length can be 0
+			// (but it still needs a buffer).
+			value = C.malloc(C.size_t(max(len(p.b), 1)))
+			copy(unsafe.Slice((*byte)(value), len(p.b)), p.b)
+			bufferLength = C.SQLINTEGER(len(p.b))
+			*ind = C.SQLINTEGER(len(p.b))
 		default:
 			value = C.CBytes([]byte(p.s + "\x00"))
 			bufferLength = C.SQLINTEGER(len(p.s) + 1)
@@ -237,7 +356,7 @@ func (h stmtHandle) execute(params []param) error {
 		}
 		if value != nil {
 			allocated = append(allocated, value)
-			if p.valueType != C.SQL_CHAR {
+			if p.valueType != C.SQL_CHAR && p.valueType != C.SQL_BINARY {
 				*ind = 0
 			}
 		}
@@ -299,6 +418,28 @@ const (
 	typeTimestamp             = C.SQL_TYPE_TIMESTAMP
 	typeTimeWithTimezone      = C.SQL_TYPE_TIME_WITH_TIMEZONE
 	typeTimestampWithTimezone = C.SQL_TYPE_TIMESTAMP_WITH_TIMEZONE
+	typeDecfloat              = C.SQL_DECFLOAT
+	typeBinary                = C.SQL_BINARY
+	typeVarbinary             = C.SQL_VARBINARY
+	typeBlob                  = C.SQL_BLOB
+	typeClob                  = C.SQL_CLOB
+
+	// The concise codes of the intervals (SQL_INTERVAL is the verbose type of
+	// any of them).
+	typeInterval               = C.SQL_INTERVAL
+	typeIntervalYear           = C.SQL_INTERVAL_YEAR
+	typeIntervalMonth          = C.SQL_INTERVAL_MONTH
+	typeIntervalDay            = C.SQL_INTERVAL_DAY
+	typeIntervalHour           = C.SQL_INTERVAL_HOUR
+	typeIntervalMinute         = C.SQL_INTERVAL_MINUTE
+	typeIntervalSecond         = C.SQL_INTERVAL_SECOND
+	typeIntervalYearToMonth    = C.SQL_INTERVAL_YEAR_TO_MONTH
+	typeIntervalDayToHour      = C.SQL_INTERVAL_DAY_TO_HOUR
+	typeIntervalDayToMinute    = C.SQL_INTERVAL_DAY_TO_MINUTE
+	typeIntervalDayToSecond    = C.SQL_INTERVAL_DAY_TO_SECOND
+	typeIntervalHourToMinute   = C.SQL_INTERVAL_HOUR_TO_MINUTE
+	typeIntervalHourToSecond   = C.SQL_INTERVAL_HOUR_TO_SECOND
+	typeIntervalMinuteToSecond = C.SQL_INTERVAL_MINUTE_TO_SECOND
 )
 
 // Nullability, from SQLDescribeCol.
@@ -434,11 +575,41 @@ func (h stmtHandle) getString(n int, b *buffer) (string, bool, error) {
 	}
 }
 
+// getBytes reads a binary string column as SQL_BINARY, it's false for a NULL.
+// A value that doesn't fit in the buffer is read in pieces, like getString.
+func (h stmtHandle) getBytes(n int, b *buffer) ([]byte, bool, error) {
+	s := []byte{}
+	for {
+		rc := C.SQLGetData(C.SQLHSTMT(h), C.SQLSMALLINT(n), C.SQL_BINARY, C.SQLPOINTER(b.data),
+			C.SQLINTEGER(b.size), b.ind)
+		if err := h.check(rc); err != nil {
+			return nil, false, err
+		}
+		if *b.ind == C.SQL_NULL_DATA {
+			return nil, false, nil
+		}
+
+		// ind is the length of the rest of the value, and the buffer has as
+		// much of it as fits.
+		rest := int(*b.ind)
+		s = append(s, C.GoBytes(b.data, C.int(min(rest, b.size)))...)
+		if rc != C.SQL_SUCCESS_WITH_INFO || rest <= b.size {
+			return s, true, nil
+		}
+
+		rest -= b.size
+		C.free(b.data)
+		b.size = rest
+		b.data = C.malloc(C.size_t(b.size))
+	}
+}
+
 // Value types and parameter types for SQLBindParameter.
 const (
 	valueChar   = C.SQL_CHAR
 	valueBigint = C.SQL_BIGINT
 	valueDouble = C.SQL_DOUBLE
+	valueBinary = C.SQL_BINARY
 )
 
 // param is a value for SQLBindParameter.
@@ -453,4 +624,5 @@ type param struct {
 	i int64
 	f float64
 	s string
+	b []byte
 }

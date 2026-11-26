@@ -108,11 +108,14 @@ const (
 	layoutTimestampWithTimezone = "2006-01-02 15:04:05.999999999-07:00"
 )
 
-// unquoteDatetime is the string in a datetime literal, such as "2022-01-02"
-// for "DATE '2022-01-02'".
+// unquoteDatetime is the string in a datetime (or interval) literal, such as
+// "2022-01-02" for "DATE '2022-01-02'", or "1-02" for
+// "INTERVAL '1-02' YEAR(2) TO MONTH".
 func unquoteDatetime(s string) string {
-	if i := strings.IndexByte(s, '\''); i >= 0 && len(s) > i+1 && strings.HasSuffix(s, "'") {
-		return s[i+1 : len(s)-1]
+	i := strings.IndexByte(s, '\'')
+	j := strings.LastIndexByte(s, '\'')
+	if i >= 0 && j > i {
+		return s[i+1 : j]
 	}
 
 	return s
@@ -127,6 +130,8 @@ func (r *rows) value(n int, c column) (driver.Value, error) {
 		v, ok, err = r.h.getInt64(n, r.buf)
 	case typeReal, typeFloat, typeDouble:
 		v, ok, err = r.h.getFloat64(n, c.dataType == typeReal, r.buf)
+	case typeBinary, typeVarbinary, typeBlob:
+		v, ok, err = r.h.getBytes(n, r.buf)
 	default:
 		var s string
 		s, ok, err = r.h.getString(n, r.buf)
@@ -155,6 +160,9 @@ func parse(s string, dataType int) (driver.Value, error) {
 	case typeDate, typeTime, typeTimeWithTimezone, typeTimestamp, typeTimestampWithTimezone:
 		s = unquoteDatetime(s)
 	}
+	if isInterval(dataType) {
+		return unquoteDatetime(s), nil
+	}
 
 	switch dataType {
 	case typeDate:
@@ -169,8 +177,15 @@ func parse(s string, dataType int) (driver.Value, error) {
 		return time.Parse(layoutTimestampWithTimezone, s)
 	}
 
-	// CHARACTER, CHARACTER VARYING, DECIMAL and NUMERIC.
+	// CHARACTER, CHARACTER VARYING, CHARACTER LARGE OBJECT, DECIMAL, NUMERIC
+	// and DECFLOAT.
 	return s, nil
+}
+
+// isInterval is true for the (concise) type of an interval.
+func isInterval(dataType int) bool {
+	return dataType == typeInterval ||
+		(dataType >= typeIntervalYear && dataType <= typeIntervalMinuteToSecond)
 }
 
 var typeNames = map[int]string{
@@ -190,6 +205,25 @@ var typeNames = map[int]string{
 	typeTimeWithTimezone:      "TIME WITH TIME ZONE",
 	typeTimestamp:             "TIMESTAMP",
 	typeTimestampWithTimezone: "TIMESTAMP WITH TIME ZONE",
+	typeDecfloat:              "DECFLOAT",
+	typeBinary:                "BINARY",
+	typeVarbinary:             "BINARY VARYING",
+	typeBlob:                  "BINARY LARGE OBJECT",
+	typeClob:                  "CHARACTER LARGE OBJECT",
+
+	typeIntervalYear:           "INTERVAL YEAR",
+	typeIntervalMonth:          "INTERVAL MONTH",
+	typeIntervalDay:            "INTERVAL DAY",
+	typeIntervalHour:           "INTERVAL HOUR",
+	typeIntervalMinute:         "INTERVAL MINUTE",
+	typeIntervalSecond:         "INTERVAL SECOND",
+	typeIntervalYearToMonth:    "INTERVAL YEAR TO MONTH",
+	typeIntervalDayToHour:      "INTERVAL DAY TO HOUR",
+	typeIntervalDayToMinute:    "INTERVAL DAY TO MINUTE",
+	typeIntervalDayToSecond:    "INTERVAL DAY TO SECOND",
+	typeIntervalHourToMinute:   "INTERVAL HOUR TO MINUTE",
+	typeIntervalHourToSecond:   "INTERVAL HOUR TO SECOND",
+	typeIntervalMinuteToSecond: "INTERVAL MINUTE TO SECOND",
 }
 
 func (r *rows) ColumnTypeDatabaseTypeName(index int) string {
@@ -228,6 +262,9 @@ func (r *rows) ColumnTypeScanType(index int) reflect.Type {
 	}
 
 	switch c.dataType {
+	case typeBinary, typeVarbinary, typeBlob:
+		// A NULL is a nil []byte.
+		return reflect.TypeOf([]byte(nil))
 	case typeDate, typeTime, typeTimeWithTimezone, typeTimestamp, typeTimestampWithTimezone:
 		if null {
 			return reflect.TypeOf(sql.NullTime{})
@@ -252,19 +289,28 @@ func (r *rows) ColumnTypeNullable(index int) (nullable, ok bool) {
 	return false, false
 }
 
-// ColumnTypeLength is the maximum number of characters of a CHARACTER or
-// CHARACTER VARYING.
+// ColumnTypeLength is the maximum number of characters of a CHARACTER,
+// CHARACTER VARYING or CHARACTER LARGE OBJECT, or the maximum number of octets
+// of a BINARY, BINARY VARYING or BINARY LARGE OBJECT. It's math.MaxInt64 if
+// there isn't a maximum.
 func (r *rows) ColumnTypeLength(index int) (length int64, ok bool) {
 	c := r.columns[index]
-	if c.dataType != typeChar && c.dataType != typeVarchar {
-		return 0, false
+	if c.columnSize <= 0 || c.columnSize == math.MaxInt32 {
+		switch c.dataType {
+		case typeChar, typeVarchar, typeClob, typeBinary, typeVarbinary, typeBlob:
+			return math.MaxInt64, true
+		}
 	}
 
-	// The size is in octets, with 4 for each character.
-	if c.columnSize <= 0 {
-		return math.MaxInt64, true
+	switch c.dataType {
+	case typeChar, typeVarchar, typeClob:
+		// The size is in octets, with 4 for each character.
+		return int64(c.columnSize / 4), true
+	case typeBinary, typeVarbinary, typeBlob:
+		return int64(c.columnSize), true
 	}
-	return int64(c.columnSize / 4), true
+
+	return 0, false
 }
 
 // ColumnTypePrecisionScale is the precision and scale of a DECIMAL or NUMERIC.

@@ -25,7 +25,9 @@ func (c *conn) CheckNamedValue(nv *driver.NamedValue) error {
 	return driver.ErrSkip
 }
 
-func toParams(args []driver.NamedValue) ([]param, error) {
+// toParams are the parameters for a statement, with the types of its dynamic
+// parameters from paramTypes (which may be nil).
+func toParams(args []driver.NamedValue, types []int) ([]param, error) {
 	params := make([]param, len(args))
 	for i, arg := range args {
 		if arg.Name != "" {
@@ -33,7 +35,11 @@ func toParams(args []driver.NamedValue) ([]param, error) {
 		}
 
 		var err error
-		if params[i], err = toParam(arg.Value); err != nil {
+		dataType := 0
+		if i < len(types) {
+			dataType = types[i]
+		}
+		if params[i], err = toParam(arg.Value, dataType); err != nil {
 			return nil, fmt.Errorf("vsql: parameter %d: %w", arg.Ordinal, err)
 		}
 	}
@@ -41,7 +47,9 @@ func toParams(args []driver.NamedValue) ([]param, error) {
 	return params, nil
 }
 
-func toParam(v driver.Value) (param, error) {
+// toParam is a value for a dynamic parameter of dataType (0 if it's not
+// known).
+func toParam(v driver.Value, dataType int) (param, error) {
 	switch v := v.(type) {
 	case nil:
 		// The type doesn't matter for a NULL, since it's cast to the type it's
@@ -60,6 +68,16 @@ func toParam(v driver.Value) (param, error) {
 	case string:
 		return stringParam(v), nil
 	case []byte:
+		if v == nil {
+			return toParam(nil, dataType)
+		}
+		// A binary string can only be cast to (or from) another binary string,
+		// so []byte is a string for anything else, such as a CHARACTER VARYING
+		// column.
+		switch dataType {
+		case typeBinary, typeVarbinary, typeBlob, 0:
+			return param{valueType: valueBinary, parameterType: typeVarbinary, columnSize: max(len(v), 1), b: v}, nil
+		}
 		return stringParam(string(v)), nil
 	case time.Time:
 		s := v.Format(layoutParameter)
@@ -72,12 +90,12 @@ func toParam(v driver.Value) (param, error) {
 		}, nil
 	case *big.Int:
 		if v == nil {
-			return toParam(nil)
+			return toParam(nil, dataType)
 		}
 		return numericParam(v.String(), 0), nil
 	case *big.Rat:
 		if v == nil {
-			return toParam(nil)
+			return toParam(nil, dataType)
 		}
 		s, scale, err := ratString(v)
 		if err != nil {
