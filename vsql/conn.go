@@ -81,8 +81,8 @@ func (c *conn) Begin() (driver.Tx, error) {
 	return c.BeginTx(context.Background(), driver.TxOptions{})
 }
 
-// BeginTx starts a transaction. vsql transactions are always READ COMMITTED,
-// so a higher isolation level or a read only transaction is an error.
+// BeginTx starts a transaction. The default isolation level is READ
+// COMMITTED. READ UNCOMMITTED transactions are always READ ONLY.
 func (c *conn) BeginTx(ctx context.Context, opts driver.TxOptions) (driver.Tx, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -98,6 +98,8 @@ func (c *conn) BeginTx(ctx context.Context, opts driver.TxOptions) (driver.Tx, e
 	case sql.LevelDefault, sql.LevelReadCommitted:
 		isolationLevel = transactionReadCommitted
 	case sql.LevelReadUncommitted:
+		// READ WRITE can't be used with READ UNCOMMITTED.
+		accessMode = transactionReadOnly
 		isolationLevel = transactionReadUncommitted
 	case sql.LevelRepeatableRead:
 		isolationLevel = transactionRepeatableRead

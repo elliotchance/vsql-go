@@ -43,8 +43,7 @@ cgo must be enabled (`CGO_ENABLED=1`, the default when building for the same
 OS) with a C compiler. The first build compiles libvsql, which takes about 20
 seconds, after that it's cached by Go.
 
-macOS (ARM64 and x86-64), Linux (ARM64 and x86-64) and Windows (x86-64) are
-supported.
+macOS, Linux and Windows (each on ARM64 and x86-64) are supported.
 
 On Linux, libvsql's garbage collector uses SIGPWR and SIGXCPU to stop threads,
 so don't use `signal.Notify` with them.

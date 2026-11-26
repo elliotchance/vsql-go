@@ -7,6 +7,7 @@ import (
 	"io"
 	"math"
 	"reflect"
+	"strings"
 	"time"
 )
 
@@ -97,14 +98,25 @@ func (r *rows) Next(dest []driver.Value) error {
 	return nil
 }
 
-// Layouts of the datetimes from SQLGetData.
+// Layouts of the datetimes from SQLGetData, which are literals (such as
+// "DATE '2022-01-02'"), without the keyword and quotes (see unquoteDatetime).
 const (
 	layoutDate                  = "2006-01-02"
 	layoutTime                  = "15:04:05.999999999"
-	layoutTimeWithTimezone      = "15:04:05.999999999-0700"
-	layoutTimestamp             = "2006-01-02T15:04:05.999999999"
-	layoutTimestampWithTimezone = "2006-01-02T15:04:05.999999999-0700"
+	layoutTimeWithTimezone      = "15:04:05.999999999-07:00"
+	layoutTimestamp             = "2006-01-02 15:04:05.999999999"
+	layoutTimestampWithTimezone = "2006-01-02 15:04:05.999999999-07:00"
 )
+
+// unquoteDatetime is the string in a datetime literal, such as "2022-01-02"
+// for "DATE '2022-01-02'".
+func unquoteDatetime(s string) string {
+	if i := strings.IndexByte(s, '\''); i >= 0 && len(s) > i+1 && strings.HasSuffix(s, "'") {
+		return s[i+1 : len(s)-1]
+	}
+
+	return s
+}
 
 func (r *rows) value(n int, c column) (driver.Value, error) {
 	var v driver.Value
@@ -140,6 +152,11 @@ func parse(s string, dataType int) (driver.Value, error) {
 			return false, nil
 		}
 		return nil, fmt.Errorf("invalid BOOLEAN: %q", s)
+	case typeDate, typeTime, typeTimeWithTimezone, typeTimestamp, typeTimestampWithTimezone:
+		s = unquoteDatetime(s)
+	}
+
+	switch dataType {
 	case typeDate:
 		return time.Parse(layoutDate, s)
 	case typeTime:
