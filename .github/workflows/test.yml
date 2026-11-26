@@ -30,11 +30,26 @@ jobs:
           - os: Windows
             arch: ARM64
             runner: windows-11-arm
+            # Go has no race detector for windows/arm64.
+            race: false
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version: stable
+      # The runner's gcc is MinGW for x86-64, so cgo needs a C compiler for
+      # ARM64 (clang from MSYS2's CLANGARM64).
+      - if: matrix.os == 'Windows' && matrix.arch == 'ARM64'
+        id: msys2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: CLANGARM64
+          install: mingw-w64-clang-aarch64-clang
+      - if: matrix.os == 'Windows' && matrix.arch == 'ARM64'
+        shell: pwsh
+        run: |
+          "${{ steps.msys2.outputs.msys2-location }}\clangarm64\bin" >> $env:GITHUB_PATH
+          "CC=clang" >> $env:GITHUB_ENV
       - run: go vet ./...
-      - run: go test -race ./...
+      - run: go test ${{ matrix.race != false && '-race' || '' }} ./...

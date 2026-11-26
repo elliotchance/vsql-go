@@ -477,23 +477,28 @@ func TestTransactions(t *testing.T) {
 	})
 
 	t.Run("isolation levels", func(t *testing.T) {
-		for _, level := range []sql.IsolationLevel{sql.LevelDefault, sql.LevelReadUncommitted, sql.LevelReadCommitted} {
-			tx, err := db.BeginTx(context.Background(), &sql.TxOptions{Isolation: level})
-			if err != nil {
-				t.Errorf("%s: %v", level, err)
-				continue
-			}
-			tx.Rollback()
-		}
 		for _, opts := range []sql.TxOptions{
-			{Isolation: sql.LevelSerializable},
+			{Isolation: sql.LevelDefault},
+			{Isolation: sql.LevelReadUncommitted},
+			{Isolation: sql.LevelReadCommitted},
 			{Isolation: sql.LevelRepeatableRead},
+			{Isolation: sql.LevelSerializable},
 			{ReadOnly: true},
 		} {
-			_, err := db.BeginTx(context.Background(), &opts)
-			if state := sqlState(err); state != vsql.OptionalFeatureNotImplementedError {
-				t.Errorf("%+v: got %v", opts, err)
+			tx, err := db.BeginTx(context.Background(), &opts)
+			if err != nil {
+				t.Errorf("%+v: %v", opts, err)
+				continue
 			}
+			_, err = tx.Exec("INSERT INTO foo (x) VALUES (1)")
+			// READ UNCOMMITTED is always READ ONLY.
+			readOnly := opts.ReadOnly || opts.Isolation == sql.LevelReadUncommitted
+			if state := sqlState(err); readOnly && state != vsql.ReadOnlyTransactionError {
+				t.Errorf("%+v: got %v", opts, err)
+			} else if !readOnly && err != nil {
+				t.Errorf("%+v: %v", opts, err)
+			}
+			tx.Rollback()
 		}
 		_, err := db.BeginTx(context.Background(), &sql.TxOptions{Isolation: sql.LevelSnapshot})
 		if err == nil {

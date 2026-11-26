@@ -1,15 +1,16 @@
 package vsql
 
 // libvsql.go is the only file that calls libvsql (see libvsql.h), which is
-// compiled into the package from the amalgamation by libvsql.c and
-// vsql_runtime.c.
+// compiled into the package from the amalgamation by libvsql.c.
 //
 // Values that libvsql reads after a routine returns (such as the parameters of
 // SQLBindParameter, which are read by SQLExecute) are allocated with C.malloc,
 // since C can't keep a Go pointer.
 //
-// The C that V generates for Linux passes a pthread_t as a void*, which is an
-// error from GCC 14 unless -Wno-int-conversion is given.
+// The amalgamation's Makefile compiles libvsql.c with -std=gnu11 -fwrapv -w,
+// but cgo doesn't allow -fwrapv in #cgo CFLAGS, so it's left out (as it always
+// has been here). The C that V generates for Linux passes a pthread_t as a
+// void*, which is an error from GCC 14 unless -Wno-int-conversion is given.
 
 // #cgo CFLAGS: -I${SRCDIR}/../internal/amalgamation -std=gnu11 -w -Wno-int-conversion
 // #include <stdlib.h>
@@ -32,7 +33,7 @@ type (
 var errInvalidHandle = errors.New("vsql: invalid handle")
 
 // Package initialization runs on the main thread, after the Go runtime has
-// installed its signal handlers (see vsql_runtime.c).
+// installed its signal handlers (see libvsql.c).
 func init() {
 	C.vsql_gc_after_go_init()
 }
@@ -228,6 +229,11 @@ func (h stmtHandle) execute(params []param) error {
 			value = C.CBytes([]byte(p.s + "\x00"))
 			bufferLength = C.SQLINTEGER(len(p.s) + 1)
 			*ind = C.SQLINTEGER(len(p.s))
+			// A length of 0 isn't allowed, so an empty string is
+			// null-terminated instead.
+			if len(p.s) == 0 {
+				*ind = C.SQL_NTS
+			}
 		}
 		if value != nil {
 			allocated = append(allocated, value)
