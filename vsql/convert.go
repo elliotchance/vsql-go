@@ -14,11 +14,11 @@ import (
 // TIME ZONE.
 const layoutParameter = "2006-01-02 15:04:05.000000-07:00"
 
-// CheckNamedValue allows *big.Int and *big.Rat, along with the types that
-// database/sql converts to a driver.Value.
+// CheckNamedValue allows *big.Int, *big.Rat and time.Duration, along with the
+// types that database/sql converts to a driver.Value.
 func (c *conn) CheckNamedValue(nv *driver.NamedValue) error {
 	switch nv.Value.(type) {
-	case *big.Int, *big.Rat:
+	case *big.Int, *big.Rat, time.Duration:
 		return nil
 	}
 
@@ -101,6 +101,12 @@ func toParam(v driver.Value, dataType int) (param, error) {
 			decimalDigits: 6,
 			s:             s,
 		}, nil
+	case time.Duration:
+		s, err := intervalString(v, dataType)
+		if err != nil {
+			return param{}, err
+		}
+		return stringParam(s), nil
 	case *big.Int:
 		if v == nil {
 			return toParam(nil, dataType)
@@ -174,4 +180,62 @@ func ratString(r *big.Rat) (string, int, error) {
 	scale = max(two, five)
 
 	return r.FloatString(scale), scale, nil
+}
+
+// intervalString is a time.Duration as the string in an interval literal of
+// a day-time interval type, such as "1:30:00" for an INTERVAL HOUR TO SECOND.
+// It's an INTERVAL DAY TO SECOND if dataType isn't a day-time interval. The
+// leading field has every unit above it, so 25 hours is "25" for an INTERVAL
+// HOUR. It's an error if the duration has a part that's smaller than the
+// last field.
+func intervalString(d time.Duration, dataType int) (string, error) {
+	sign := ""
+	n := uint64(d)
+	if d < 0 {
+		sign = "-"
+		n = -n
+	}
+	ns := n % uint64(time.Second)
+	seconds := n / uint64(time.Second)
+	minutes := seconds / 60
+	hours := minutes / 60
+	days := hours / 24
+
+	fraction := ""
+	if ns != 0 {
+		fraction = strings.TrimRight(fmt.Sprintf(".%09d", ns), "0")
+	}
+	exact := func(unit string, rest uint64) error {
+		if rest != 0 {
+			return fmt.Errorf("%s isn't a whole number of %s for %s", d, unit, typeNames[dataType])
+		}
+		return nil
+	}
+
+	var s string
+	var err error
+	switch dataType {
+	case typeIntervalDay:
+		s, err = fmt.Sprint(days), exact("days", n%uint64(24*time.Hour))
+	case typeIntervalHour:
+		s, err = fmt.Sprint(hours), exact("hours", n%uint64(time.Hour))
+	case typeIntervalMinute:
+		s, err = fmt.Sprint(minutes), exact("minutes", n%uint64(time.Minute))
+	case typeIntervalSecond:
+		s = fmt.Sprintf("%d%s", seconds, fraction)
+	case typeIntervalDayToHour:
+		s, err = fmt.Sprintf("%d %02d", days, hours%24), exact("hours", n%uint64(time.Hour))
+	case typeIntervalDayToMinute:
+		s, err = fmt.Sprintf("%d %02d:%02d", days, hours%24, minutes%60), exact("minutes", n%uint64(time.Minute))
+	case typeIntervalHourToMinute:
+		s, err = fmt.Sprintf("%d:%02d", hours, minutes%60), exact("minutes", n%uint64(time.Minute))
+	case typeIntervalHourToSecond:
+		s = fmt.Sprintf("%d:%02d:%02d%s", hours, minutes%60, seconds%60, fraction)
+	case typeIntervalMinuteToSecond:
+		s = fmt.Sprintf("%d:%02d%s", minutes, seconds%60, fraction)
+	default:
+		s = fmt.Sprintf("%d %02d:%02d:%02d%s", days, hours%24, minutes%60, seconds%60, fraction)
+	}
+
+	return sign + s, err
 }

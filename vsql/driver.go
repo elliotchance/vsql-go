@@ -52,6 +52,7 @@
 //	time.Time            TIMESTAMP(6) WITH TIME ZONE
 //	*big.Int             NUMERIC
 //	*big.Rat             NUMERIC (it must be a finite decimal)
+//	time.Duration        INTERVAL (see below)
 //
 // A type that implements driver.Valuer (such as a decimal type) is sent as the
 // value it returns. A time.Time for a TIMESTAMP or TIME (without a time zone)
@@ -69,6 +70,12 @@
 // DECFLOAT and INTERVAL parameters are strings, such as "1.25" or "1-2" (for
 // INTERVAL YEAR TO MONTH) and "3 04:05:06.5" (for INTERVAL DAY TO SECOND). A
 // CHARACTER LARGE OBJECT is a string.
+//
+// A time.Duration is a day-time interval, in the fields of its parameter's
+// type (or INTERVAL DAY TO SECOND for any other type), such as "1:30:00" for
+// 90 minutes as an INTERVAL HOUR TO SECOND. It's an error if it has a part
+// that's smaller than the last field, such as 90 seconds for an INTERVAL HOUR
+// TO MINUTE.
 //
 // # Columns
 //

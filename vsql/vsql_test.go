@@ -366,6 +366,69 @@ func TestOffsetSeconds(t *testing.T) {
 	}
 }
 
+func TestDurationParameters(t *testing.T) {
+	db := openMemory(t)
+	d := 26*time.Hour + 3*time.Minute + 4*time.Second + 500*time.Millisecond
+
+	for _, test := range []struct {
+		typ  string
+		arg  time.Duration
+		want string
+	}{
+		{"DAY TO SECOND(6)", d, "1 02:03:04.500000"},
+		{"DAY TO SECOND(6)", -d, "-1 02:03:04.500000"},
+		{"DAY TO SECOND(6)", 0, "0 00:00:00.000000"},
+		{"HOUR TO SECOND", d, "26:03:04.500000"},
+		{"MINUTE TO SECOND", 90*time.Second + time.Microsecond, "1:30.000001"},
+		{"SECOND(5, 3)", d, "93784.500"},
+		{"DAY", 48 * time.Hour, "2"},
+		{"HOUR", 26 * time.Hour, "26"},
+		{"MINUTE", 90 * time.Minute, "90"},
+		{"DAY TO HOUR", 26 * time.Hour, "1 02"},
+		{"DAY TO MINUTE", 26*time.Hour + time.Minute, "1 02:01"},
+		{"HOUR TO MINUTE", 90 * time.Minute, "1:30"},
+	} {
+		t.Run(fmt.Sprintf("%s %s", test.typ, test.arg), func(t *testing.T) {
+			var got string
+			err := db.QueryRow("VALUES CAST(? AS INTERVAL "+test.typ+")", test.arg).Scan(&got)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != test.want {
+				t.Errorf("got %q, want %q", got, test.want)
+			}
+		})
+	}
+
+	t.Run("column", func(t *testing.T) {
+		exec(t, db, "CREATE TABLE foo (x INTERVAL HOUR(3) TO MINUTE)")
+		exec(t, db, "INSERT INTO foo (x) VALUES (?)", 150*time.Hour)
+		var got string
+		if err := db.QueryRow("SELECT x FROM foo WHERE x = ?", 150*time.Hour).Scan(&got); err != nil {
+			t.Fatal(err)
+		}
+		if got != "150:00" {
+			t.Errorf("got %q", got)
+		}
+	})
+
+	t.Run("inexact", func(t *testing.T) {
+		var got string
+		err := db.QueryRow("VALUES CAST(? AS INTERVAL HOUR TO MINUTE)", 90*time.Second).Scan(&got)
+		if err == nil || !strings.Contains(err.Error(), "whole number of minutes") {
+			t.Errorf("got %v", err)
+		}
+	})
+
+	t.Run("year-month", func(t *testing.T) {
+		var got string
+		err := db.QueryRow("VALUES CAST(? AS INTERVAL YEAR TO MONTH)", d).Scan(&got)
+		if sqlState(err) != "22006" { // invalid interval format
+			t.Errorf("got %v", err)
+		}
+	})
+}
+
 func TestScanTypes(t *testing.T) {
 	db := openMemory(t)
 
