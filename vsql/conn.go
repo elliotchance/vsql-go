@@ -34,7 +34,7 @@ func connect(name string) (_ *conn, err error) {
 	if c.env, err = allocEnv(); err != nil {
 		return nil, err
 	}
-	if c.dbc, err = c.env.allocDbc(); err != nil {
+	if c.dbc, err = allocDbc(c.env); err != nil {
 		_ = c.env.free()
 		return nil, err
 	}
@@ -43,7 +43,7 @@ func connect(name string) (_ *conn, err error) {
 		_ = c.env.free()
 		return nil, err
 	}
-	if err = c.dbc.setAutocommit(true); err != nil {
+	if err = setAutocommit(c.dbc, true); err != nil {
 		_ = c.Close()
 		return nil, err
 	}
@@ -138,7 +138,7 @@ func (c *conn) PrepareContext(ctx context.Context, query string) (driver.Stmt, e
 	if err != nil {
 		return nil, err
 	}
-	types, err := h.paramTypes()
+	types, err := paramTypes(h)
 	if err != nil {
 		_ = h.free()
 		return nil, err
@@ -222,7 +222,7 @@ func (c *conn) run(ctx context.Context, query string, args []driver.NamedValue) 
 	if err != nil {
 		return 0, err
 	}
-	types, err := h.paramTypes()
+	types, err := paramTypes(h)
 	if err == nil {
 		var params []param
 		if params, err = toParams(args, types); err == nil {
@@ -268,7 +268,7 @@ func result(h stmtHandle) (driver.Result, error) {
 		return nil, err
 	}
 
-	columns, err := h.numResultCols()
+	columns, err := numResultCols(h)
 	if err != nil {
 		return nil, err
 	}

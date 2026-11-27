@@ -36,14 +36,14 @@ var (
 )
 
 func newRows(ctx context.Context, h stmtHandle, s *stmt) (*rows, error) {
-	n, err := h.numResultCols()
+	n, err := numResultCols(h)
 	if err != nil {
 		return nil, err
 	}
 
 	r := &rows{ctx: ctx, h: h, stmt: s, columns: make([]column, n)}
 	for i := range r.columns {
-		if r.columns[i], err = h.describeCol(i + 1); err != nil {
+		if r.columns[i], err = describeCol(h, i+1); err != nil {
 			return nil, err
 		}
 	}

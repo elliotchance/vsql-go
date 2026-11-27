@@ -39,6 +39,21 @@ func init() {
 	C.vsql_gc_after_go_init()
 }
 
+// The routines that only fail if libvsql does (such as when it runs out of
+// memory) are called through these variables, so that tests can make them
+// fail.
+var (
+	allocEnv      = allocEnvHandle
+	allocDbc      = envHandle.allocDbc
+	setAutocommit = dbcHandle.setAutocommit
+	getInfoString = dbcHandle.getInfoString
+	paramTypes    = stmtHandle.paramTypes
+	descCount     = descHandle.count
+	descSmallint  = descHandle.smallint
+	numResultCols = stmtHandle.numResultCols
+	describeCol   = stmtHandle.describeCol
+)
+
 // check is the error for a return code, with the diagnostics of the handle.
 // SQL_NO_DATA isn't an error.
 func check(rc C.SQLRETURN, handleType C.SQLSMALLINT, handle C.SQLINTEGER) error {
@@ -124,14 +139,21 @@ func (h stmtHandle) check(rc C.SQLRETURN) error {
 	return check(rc, C.SQL_HANDLE_STMT, C.SQLINTEGER(h))
 }
 
-func allocEnv() (envHandle, error) {
+func allocEnvHandle() (envHandle, error) {
 	var env C.SQLHENV
 	rc := C.SQLAllocHandle(C.SQL_HANDLE_ENV, C.SQL_NULL_HANDLE, &env)
+
+	return envHandle(env), allocEnvError(rc)
+}
+
+// allocEnvError is the error for the return code of allocating an
+// environment, which has no handle for diagnostics.
+func allocEnvError(rc C.SQLRETURN) error {
 	if rc != C.SQL_SUCCESS {
-		return 0, &Error{SQLState: MemoryAllocationError, Message: "can't allocate an environment"}
+		return &Error{SQLState: MemoryAllocationError, Message: "can't allocate an environment"}
 	}
 
-	return envHandle(env), nil
+	return nil
 }
 
 func (h envHandle) free() error {
@@ -226,9 +248,10 @@ const (
 	infoMachine         = C.SQL_VSQL_MACHINE
 )
 
-// getInfoString reads a string with SQLGetInfo.
+// getInfoString reads a string with SQLGetInfo. The buffer starts small, and
+// grows for a longer string (such as a commit).
 func (h dbcHandle) getInfoString(infoType int) (string, error) {
-	value := make([]C.SQLCHAR, 129)
+	value := make([]C.SQLCHAR, 16)
 	var length C.SQLSMALLINT
 	for {
 		err := h.check(C.SQLGetInfo(C.SQLHDBC(h), C.SQLSMALLINT(infoType),
@@ -321,44 +344,56 @@ func (h stmtHandle) paramTypes() ([]int, error) {
 		return nil, err
 	}
 
-	checkDesc := func(rc C.SQLRETURN) error {
-		return check(rc, C.SQL_HANDLE_DESC, C.SQLINTEGER(ipd))
-	}
-	var count C.SQLSMALLINT
-	if err := checkDesc(C.SQLGetDescField(ipd, 0, C.SQL_DESC_COUNT,
-		C.SQLPOINTER(unsafe.Pointer(&count)), 0, nil)); err != nil {
+	count, err := descCount(descHandle(ipd))
+	if err != nil {
 		return nil, err
 	}
 
 	types := make([]int, count)
 	for i := range types {
-		var dataType C.SQLSMALLINT
-		rc := C.SQLGetDescField(ipd, C.SQLSMALLINT(i+1), C.SQL_DESC_TYPE,
-			C.SQLPOINTER(unsafe.Pointer(&dataType)), 0, nil)
 		// A field that was never set (HY091) is an unknown type.
-		if rc != C.SQL_SUCCESS && rc != C.SQL_SUCCESS_WITH_INFO {
+		dataType, ok := descSmallint(descHandle(ipd), i+1, C.SQL_DESC_TYPE)
+		if !ok {
 			continue
 		}
-		types[i] = int(dataType)
+		types[i] = dataType
 
 		// SQL_DESC_TYPE is SQL_DATETIME for any datetime, and SQL_INTERVAL for
 		// any interval, so the concise type (such as SQL_TYPE_TIMESTAMP or
 		// SQL_INTERVAL_DAY_TO_SECOND) is from its datetime interval code.
 		if dataType == C.SQL_DATETIME || dataType == C.SQL_INTERVAL {
-			var code C.SQLSMALLINT
-			rc := C.SQLGetDescField(ipd, C.SQLSMALLINT(i+1), C.SQL_DESC_DATETIME_INTERVAL_CODE,
-				C.SQLPOINTER(unsafe.Pointer(&code)), 0, nil)
-			if rc == C.SQL_SUCCESS || rc == C.SQL_SUCCESS_WITH_INFO {
-				if dataType == C.SQL_DATETIME {
-					types[i] = datetimeTypes[code]
-				} else {
-					types[i] = typeIntervalYear - C.SQL_CODE_YEAR + int(code)
-				}
+			code, ok := descSmallint(descHandle(ipd), i+1, C.SQL_DESC_DATETIME_INTERVAL_CODE)
+			if ok && dataType == C.SQL_DATETIME {
+				types[i] = datetimeTypes[C.SQLSMALLINT(code)]
+			} else if ok {
+				types[i] = typeIntervalYear - C.SQL_CODE_YEAR + code
 			}
 		}
 	}
 
 	return types, nil
+}
+
+// descHandle is the handle of a descriptor.
+type descHandle C.SQLHDESC
+
+// count is the number of records of a descriptor.
+func (d descHandle) count() (int, error) {
+	var count C.SQLSMALLINT
+	err := check(C.SQLGetDescField(C.SQLHDESC(d), 0, C.SQL_DESC_COUNT,
+		C.SQLPOINTER(unsafe.Pointer(&count)), 0, nil), C.SQL_HANDLE_DESC, C.SQLINTEGER(d))
+
+	return int(count), err
+}
+
+// smallint reads an SQLSMALLINT field of a record of a descriptor. It's false
+// if the field can't be read (such as one that was never set).
+func (d descHandle) smallint(record, field int) (int, bool) {
+	var value C.SQLSMALLINT
+	rc := C.SQLGetDescField(C.SQLHDESC(d), C.SQLSMALLINT(record), C.SQLSMALLINT(field),
+		C.SQLPOINTER(unsafe.Pointer(&value)), 0, nil)
+
+	return int(value), rc == C.SQL_SUCCESS || rc == C.SQL_SUCCESS_WITH_INFO
 }
 
 // execute executes the prepared statement with the parameters, which are

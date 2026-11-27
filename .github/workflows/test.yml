@@ -53,3 +53,15 @@ jobs:
           "CC=clang" >> $env:GITHUB_ENV
       - run: go vet ./...
       - run: go test ${{ matrix.race != false && '-race' || '' }} ./...
+      # Every statement must be covered by the tests. The code isn't specific
+      # to an OS, so it's only measured on one.
+      - if: matrix.os == 'Linux' && matrix.arch == 'x86-64'
+        name: Check that test coverage is 100%
+        run: |
+          go test -coverprofile=coverage.out ./vsql
+          go tool cover -func=coverage.out | awk '$3 != "100.0%"'
+          total="$(go tool cover -func=coverage.out | tail -1 | awk '{print $3}')"
+          if [ "$total" != "100.0%" ]; then
+            echo "::error::Test coverage is $total, but it must be 100%"
+            exit 1
+          fi
