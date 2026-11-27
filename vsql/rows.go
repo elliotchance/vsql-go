@@ -66,7 +66,12 @@ func (r *rows) Close() error {
 	r.closed = true
 	r.buf.free()
 
-	err := r.h.closeCursor()
+	// A statement without a result set (such as an INSERT run with Query)
+	// doesn't have a cursor.
+	var err error
+	if len(r.columns) > 0 {
+		err = r.h.closeCursor()
+	}
 	if r.stmt != nil {
 		r.stmt.rows = nil
 		if !r.stmt.closed {
@@ -81,6 +86,10 @@ func (r *rows) Close() error {
 }
 
 func (r *rows) Next(dest []driver.Value) error {
+	if len(r.columns) == 0 {
+		return io.EOF
+	}
+
 	ok, err := r.h.fetch()
 	if err != nil {
 		return err

@@ -530,6 +530,56 @@ func TestExecResult(t *testing.T) {
 	exec(t, db, "DROP TABLE foo")
 }
 
+func TestQueryWithoutResultSet(t *testing.T) {
+	db := openMemory(t)
+	exec(t, db, "CREATE TABLE foo (x INTEGER)")
+
+	query := func(query string, args ...any) {
+		t.Helper()
+		rows, err := db.Query(query, args...)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if columns, err := rows.Columns(); len(columns) != 0 || err != nil {
+			t.Errorf("columns are %v (%v)", columns, err)
+		}
+		if rows.Next() {
+			t.Error("there's a row")
+		}
+		if err := rows.Err(); err != nil {
+			t.Error(err)
+		}
+		if err := rows.Close(); err != nil {
+			t.Error(err)
+		}
+	}
+	query("INSERT INTO foo (x) VALUES (1)")
+	query("INSERT INTO foo (x) VALUES (?)", 2)
+
+	stmt, err := db.Prepare("INSERT INTO foo (x) VALUES (?)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stmt.Close()
+	for _, x := range []int{3, 4} {
+		rows, err := stmt.Query(x)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if rows.Next() || rows.Err() != nil || rows.Close() != nil {
+			t.Errorf("%d: %v", x, rows.Err())
+		}
+	}
+
+	var n int
+	if err := db.QueryRow("SELECT COUNT(*) FROM foo").Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 4 {
+		t.Errorf("%d rows were inserted", n)
+	}
+}
+
 func TestPreparedStatements(t *testing.T) {
 	db := openMemory(t)
 	exec(t, db, "CREATE TABLE foo (x INTEGER)")
