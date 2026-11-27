@@ -84,7 +84,13 @@ func toParam(v driver.Value, dataType int) (param, error) {
 		// drops the offset, and it's read back as UTC. So it's sent in UTC,
 		// which keeps the instant. A DATE is the date in the value's own
 		// location.
-		if dataType == typeTimestamp || dataType == typeTime {
+		//
+		// A time zone displacement is only hours and minutes, so a value with
+		// seconds in its offset (such as local mean time before 1900) is also
+		// sent in UTC, unless it's a DATE.
+		_, offset := v.Zone()
+		if dataType == typeTimestamp || dataType == typeTime ||
+			(offset%60 != 0 && dataType != typeDate) {
 			v = v.UTC()
 		}
 		s := v.Format(layoutParameter)

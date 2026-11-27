@@ -342,6 +342,30 @@ func TestParameters(t *testing.T) {
 	})
 }
 
+func TestOffsetSeconds(t *testing.T) {
+	db := openMemory(t)
+	want := time.Date(2020, 1, 2, 3, 4, 5, 0, time.FixedZone("", 3600+30))
+
+	var got time.Time
+	err := db.QueryRow("VALUES CAST(? AS TIMESTAMP(0) WITH TIME ZONE)", want).Scan(&got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Equal(want) {
+		t.Errorf("got %v, want %v", got, want)
+	}
+
+	// A DATE is still the date in the value's location, which is the day
+	// before in UTC.
+	midnight := time.Date(2020, 1, 2, 0, 0, 0, 0, time.FixedZone("", 3600+30))
+	if err := db.QueryRow("VALUES CAST(? AS DATE)", midnight).Scan(&got); err != nil {
+		t.Fatal(err)
+	}
+	if want := time.Date(2020, 1, 2, 0, 0, 0, 0, time.UTC); !got.Equal(want) {
+		t.Errorf("DATE: got %v, want %v", got, want)
+	}
+}
+
 func TestScanTypes(t *testing.T) {
 	db := openMemory(t)
 
