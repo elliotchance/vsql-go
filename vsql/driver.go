@@ -53,8 +53,9 @@
 //	*big.Rat             NUMERIC (it must be a finite decimal)
 //
 // A type that implements driver.Valuer (such as a decimal type) is sent as the
-// value it returns. A TIMESTAMP WITH TIME ZONE can't be assigned to a DATE or
-// TIME column, so use CAST(? AS DATE) or CAST(? AS TIME).
+// value it returns. A time.Time for a TIMESTAMP or TIME (without a time zone)
+// is converted to UTC, since that's how it's read back, so the instant is
+// kept. For a DATE, it's the date in the time.Time's location.
 //
 // vsql determines the type of each parameter when the statement is prepared
 // (such as the type of x in "x = ?"), so a prepared statement checks the

@@ -211,7 +211,8 @@ func TestParameters(t *testing.T) {
 		{"c", []byte("bytes"), "bytes"},
 		{"bo", true, true},
 		{"bo", false, false},
-		{"ts", ts, time.Date(2022, 1, 2, 15, 4, 5, 123456000, time.UTC)},
+		{"ts", ts, time.Date(2022, 1, 2, 19, 4, 5, 123456000, time.UTC)},
+		{"dt", ts, time.Date(2022, 1, 2, 0, 0, 0, 0, time.UTC)},
 		{"tz", ts, ts},
 		{"i", nil, nil},
 		{"c", nil, nil},
@@ -246,6 +247,18 @@ func TestParameters(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("TIME", func(t *testing.T) {
+		exec(t, db, "CREATE TABLE times (t TIME(6))")
+		exec(t, db, "INSERT INTO times (t) VALUES (?)", ts)
+		var got time.Time
+		if err := db.QueryRow("SELECT t FROM times").Scan(&got); err != nil {
+			t.Fatal(err)
+		}
+		if want := time.Date(0, 1, 1, 19, 4, 5, 123456000, time.UTC); !got.Equal(want) {
+			t.Errorf("got %v, want %v", got, want)
+		}
+	})
 
 	t.Run("CAST(? AS DATE)", func(t *testing.T) {
 		exec(t, db, "DELETE FROM foo")
