@@ -21,7 +21,8 @@
 // standard's), so it's the same as a statement outside a transaction. Only
 // one READ WRITE SERIALIZABLE transaction can be active at a time, so another
 // connection that changes the database waits for it to end (for up to 5
-// seconds, then it's a 40001 serialization failure). REPEATABLE READ
+// seconds, then it's a 40001 serialization failure, or until its context is
+// done). REPEATABLE READ
 // runs as SERIALIZABLE, READ UNCOMMITTED is always READ ONLY, and
 // sql.TxOptions.ReadOnly starts a READ ONLY transaction. See
 // https://vsql.readthedocs.io/en/latest/transactions.html
@@ -109,6 +110,14 @@
 //
 // An error from vsql is an *Error, with the SQLSTATE and, when they apply, the
 // constraint, table, column or cursor of the condition (see Error).
+//
+// # Contexts
+//
+// A statement stops soon after its context is canceled or reaches its
+// deadline, even while it's waiting for another connection's transaction, and
+// the error is ctx.Err(). The canceled statement has no effect, and the
+// transaction it's in continues. Fetching each row of a query is canceled by
+// the context of the query.
 //
 // # Build
 //
