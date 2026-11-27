@@ -306,14 +306,19 @@ func (h stmtHandle) paramTypes() ([]int, error) {
 		}
 		types[i] = int(dataType)
 
-		// SQL_DESC_TYPE is SQL_DATETIME for any datetime, so the concise type
-		// (such as SQL_TYPE_TIMESTAMP) is from its datetime interval code.
-		if dataType == C.SQL_DATETIME {
+		// SQL_DESC_TYPE is SQL_DATETIME for any datetime, and SQL_INTERVAL for
+		// any interval, so the concise type (such as SQL_TYPE_TIMESTAMP or
+		// SQL_INTERVAL_DAY_TO_SECOND) is from its datetime interval code.
+		if dataType == C.SQL_DATETIME || dataType == C.SQL_INTERVAL {
 			var code C.SQLSMALLINT
 			rc := C.SQLGetDescField(ipd, C.SQLSMALLINT(i+1), C.SQL_DESC_DATETIME_INTERVAL_CODE,
 				C.SQLPOINTER(unsafe.Pointer(&code)), 0, nil)
 			if rc == C.SQL_SUCCESS || rc == C.SQL_SUCCESS_WITH_INFO {
-				types[i] = datetimeTypes[code]
+				if dataType == C.SQL_DATETIME {
+					types[i] = datetimeTypes[code]
+				} else {
+					types[i] = typeIntervalYear - C.SQL_CODE_YEAR + int(code)
+				}
 			}
 		}
 	}
