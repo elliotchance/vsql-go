@@ -80,6 +80,13 @@ func toParam(v driver.Value, dataType int) (param, error) {
 		}
 		return stringParam(string(v)), nil
 	case time.Time:
+		// A TIMESTAMP or TIME without a time zone keeps the wall clock and
+		// drops the offset, and it's read back as UTC. So it's sent in UTC,
+		// which keeps the instant. A DATE is the date in the value's own
+		// location.
+		if dataType == typeTimestamp || dataType == typeTime {
+			v = v.UTC()
+		}
 		s := v.Format(layoutParameter)
 		return param{
 			valueType:     valueChar,

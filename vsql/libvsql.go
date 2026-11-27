@@ -275,7 +275,7 @@ func (h stmtHandle) prepare(query string) error {
 		C.SQLINTEGER(len(query))))
 }
 
-// paramTypes is the data type of each dynamic parameter of a prepared
+// paramTypes is the (concise) data type of each dynamic parameter of a prepared
 // statement, from the IPD (which libvsql fills in when it's prepared). A type
 // that isn't known until the statement is executed is 0.
 func (h stmtHandle) paramTypes() ([]int, error) {
@@ -301,8 +301,20 @@ func (h stmtHandle) paramTypes() ([]int, error) {
 		rc := C.SQLGetDescField(ipd, C.SQLSMALLINT(i+1), C.SQL_DESC_TYPE,
 			C.SQLPOINTER(unsafe.Pointer(&dataType)), 0, nil)
 		// A field that was never set (HY091) is an unknown type.
-		if rc == C.SQL_SUCCESS || rc == C.SQL_SUCCESS_WITH_INFO {
-			types[i] = int(dataType)
+		if rc != C.SQL_SUCCESS && rc != C.SQL_SUCCESS_WITH_INFO {
+			continue
+		}
+		types[i] = int(dataType)
+
+		// SQL_DESC_TYPE is SQL_DATETIME for any datetime, so the concise type
+		// (such as SQL_TYPE_TIMESTAMP) is from its datetime interval code.
+		if dataType == C.SQL_DATETIME {
+			var code C.SQLSMALLINT
+			rc := C.SQLGetDescField(ipd, C.SQLSMALLINT(i+1), C.SQL_DESC_DATETIME_INTERVAL_CODE,
+				C.SQLPOINTER(unsafe.Pointer(&code)), 0, nil)
+			if rc == C.SQL_SUCCESS || rc == C.SQL_SUCCESS_WITH_INFO {
+				types[i] = datetimeTypes[code]
+			}
 		}
 	}
 
@@ -441,6 +453,16 @@ const (
 	typeIntervalHourToSecond   = C.SQL_INTERVAL_HOUR_TO_SECOND
 	typeIntervalMinuteToSecond = C.SQL_INTERVAL_MINUTE_TO_SECOND
 )
+
+// datetimeTypes are the concise types of the SQL_DESC_DATETIME_INTERVAL_CODEs
+// of SQL_DATETIME.
+var datetimeTypes = map[C.SQLSMALLINT]int{
+	C.SQL_CODE_DATE:           typeDate,
+	C.SQL_CODE_TIME:           typeTime,
+	C.SQL_CODE_TIMESTAMP:      typeTimestamp,
+	C.SQL_CODE_TIME_ZONE:      typeTimeWithTimezone,
+	C.SQL_CODE_TIMESTAMP_ZONE: typeTimestampWithTimezone,
+}
 
 // Nullability, from SQLDescribeCol.
 const (
