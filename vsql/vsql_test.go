@@ -386,6 +386,25 @@ func TestLongStrings(t *testing.T) {
 	}
 }
 
+func TestLongStringsWithNUL(t *testing.T) {
+	db := openMemory(t)
+
+	// A NUL in the first piece that SQLGetData reads, and in a later one.
+	for _, want := range []string{
+		strings.Repeat("x", 100) + "\x00" + strings.Repeat("y", 300),
+		strings.Repeat("x", 300) + "\x00" + strings.Repeat("y", 300),
+		"\x00" + strings.Repeat("é", 200) + "\x00",
+	} {
+		var got string
+		if err := db.QueryRow("VALUES CAST(? AS VARCHAR(1000))", want).Scan(&got); err != nil {
+			t.Fatal(err)
+		}
+		if got != want {
+			t.Errorf("got %q, want %q", got, want)
+		}
+	}
+}
+
 func TestLongBinary(t *testing.T) {
 	db := openMemory(t)
 	exec(t, db, "CREATE TABLE foo (b BLOB)")
