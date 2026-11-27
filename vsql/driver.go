@@ -152,12 +152,7 @@ var (
 
 // Open opens a connection, see OpenConnector.
 func (d *Driver) Open(name string) (driver.Conn, error) {
-	c, err := d.OpenConnector(name)
-	if err != nil {
-		return nil, err
-	}
-
-	return c.Connect(context.Background())
+	return NewConnector(name).Connect(context.Background())
 }
 
 // OpenConnector returns a connector for a database, see the package

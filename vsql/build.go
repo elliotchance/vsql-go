@@ -38,7 +38,9 @@ func Build() (BuildInfo, error) {
 	return build()
 }
 
-var build = sync.OnceValues(func() (BuildInfo, error) {
+var build = sync.OnceValues(readBuild)
+
+func readBuild() (BuildInfo, error) {
 	c, err := connect(":memory:")
 	if err != nil {
 		return BuildInfo{}, err
@@ -60,7 +62,7 @@ var build = sync.OnceValues(func() (BuildInfo, error) {
 		{infoMachine, &info.Machine},
 	} {
 		var err error
-		*field.value, err = c.dbc.getInfoString(field.infoType)
+		*field.value, err = getInfoString(c.dbc, field.infoType)
 		errs = append(errs, err)
 	}
 	errs = append(errs, c.Close())
@@ -69,4 +71,4 @@ var build = sync.OnceValues(func() (BuildInfo, error) {
 	}
 
 	return info, nil
-})
+}

@@ -1,2 +1,3 @@
 *.vsql
 *.vsql.*
+coverage.out
