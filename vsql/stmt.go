@@ -3,17 +3,22 @@ package vsql
 import (
 	"context"
 	"database/sql/driver"
+	"errors"
 )
 
 // stmt is a prepared statement. Its handle can only have one cursor open, so
 // executing it while the rows of a query are still open uses a new handle.
+//
+// A ROLLBACK TO SAVEPOINT statement isn't prepared by libvsql (see
+// rollbackToSavepoint), so it has no handle, only the name of the savepoint.
 type stmt struct {
-	c      *conn
-	h      stmtHandle
-	query  string
-	types  []int
-	rows   *rows
-	closed bool
+	c         *conn
+	h         stmtHandle
+	query     string
+	types     []int
+	rows      *rows
+	closed    bool
+	savepoint string
 }
 
 var (
@@ -25,7 +30,7 @@ var (
 // Close frees the handle, or the rows free it when they're closed.
 func (s *stmt) Close() error {
 	s.closed = true
-	if s.rows != nil {
+	if s.rows != nil || s.savepoint != "" {
 		return nil
 	}
 
@@ -47,7 +52,7 @@ func (s *stmt) Query(args []driver.Value) (driver.Rows, error) {
 }
 
 func (s *stmt) ExecContext(ctx context.Context, args []driver.NamedValue) (driver.Result, error) {
-	if s.rows != nil {
+	if s.rows != nil || s.savepoint != "" {
 		return s.c.ExecContext(ctx, s.query, args)
 	}
 	if err := ctx.Err(); err != nil {
@@ -66,6 +71,9 @@ func (s *stmt) ExecContext(ctx context.Context, args []driver.NamedValue) (drive
 }
 
 func (s *stmt) QueryContext(ctx context.Context, args []driver.NamedValue) (driver.Rows, error) {
+	if s.savepoint != "" {
+		return nil, errors.New("vsql: ROLLBACK TO SAVEPOINT must be executed with Exec")
+	}
 	if s.rows != nil {
 		return s.c.QueryContext(ctx, s.query, args)
 	}
