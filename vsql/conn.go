@@ -6,6 +6,7 @@ import (
 	"database/sql/driver"
 	"errors"
 	"fmt"
+	"regexp"
 )
 
 // conn is a connection, which has its own environment so that it can be used
@@ -81,8 +82,10 @@ func (c *conn) Begin() (driver.Tx, error) {
 	return c.BeginTx(context.Background(), driver.TxOptions{})
 }
 
-// BeginTx starts a transaction. The default isolation level is READ
-// COMMITTED. READ UNCOMMITTED transactions are always READ ONLY.
+// BeginTx starts a transaction. The default isolation level is SERIALIZABLE,
+// the same as vsql's (and the SQL standard's) default for every other
+// transaction. REPEATABLE READ is also SERIALIZABLE in vsql, and READ
+// UNCOMMITTED transactions are always READ ONLY.
 func (c *conn) BeginTx(ctx context.Context, opts driver.TxOptions) (driver.Tx, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -95,7 +98,7 @@ func (c *conn) BeginTx(ctx context.Context, opts driver.TxOptions) (driver.Tx, e
 
 	var isolationLevel int
 	switch sql.IsolationLevel(opts.Isolation) {
-	case sql.LevelDefault, sql.LevelReadCommitted:
+	case sql.LevelReadCommitted:
 		isolationLevel = transactionReadCommitted
 	case sql.LevelReadUncommitted:
 		// READ WRITE can't be used with READ UNCOMMITTED.
@@ -103,7 +106,7 @@ func (c *conn) BeginTx(ctx context.Context, opts driver.TxOptions) (driver.Tx, e
 		isolationLevel = transactionReadUncommitted
 	case sql.LevelRepeatableRead:
 		isolationLevel = transactionRepeatableRead
-	case sql.LevelSerializable:
+	case sql.LevelDefault, sql.LevelSerializable:
 		isolationLevel = transactionSerializable
 	default:
 		return nil, fmt.Errorf("vsql: isolation level %s is not supported",
@@ -131,8 +134,13 @@ func (c *conn) PrepareContext(ctx context.Context, query string) (driver.Stmt, e
 	if err != nil {
 		return nil, err
 	}
+	types, err := h.paramTypes()
+	if err != nil {
+		_ = h.free()
+		return nil, err
+	}
 
-	return &stmt{c: c, h: h, query: query}, nil
+	return &stmt{c: c, h: h, query: query, types: types}, nil
 }
 
 func (c *conn) prepare(query string) (stmtHandle, error) {
@@ -153,12 +161,16 @@ func (c *conn) ExecContext(ctx context.Context, query string, args []driver.Name
 		return nil, err
 	}
 
-	params, err := toParams(args)
-	if err != nil {
-		return nil, err
+	if len(args) == 0 {
+		if name, ok := rollbackToSavepoint(query); ok {
+			if err := c.dbc.rollbackToSavepoint(name); err != nil {
+				return nil, err
+			}
+			return driver.RowsAffected(0), nil
+		}
 	}
 
-	h, err := c.run(query, params)
+	h, err := c.run(query, args)
 	if err != nil {
 		return nil, err
 	}
@@ -172,12 +184,7 @@ func (c *conn) QueryContext(ctx context.Context, query string, args []driver.Nam
 		return nil, err
 	}
 
-	params, err := toParams(args)
-	if err != nil {
-		return nil, err
-	}
-
-	h, err := c.run(query, params)
+	h, err := c.run(query, args)
 	if err != nil {
 		return nil, err
 	}
@@ -192,8 +199,8 @@ func (c *conn) QueryContext(ctx context.Context, query string, args []driver.Nam
 }
 
 // run executes a statement on a new statement handle, which must be freed.
-func (c *conn) run(query string, params []param) (stmtHandle, error) {
-	if len(params) == 0 {
+func (c *conn) run(query string, args []driver.NamedValue) (stmtHandle, error) {
+	if len(args) == 0 {
 		h, err := c.dbc.allocStmt()
 		if err != nil {
 			return 0, err
@@ -210,12 +217,36 @@ func (c *conn) run(query string, params []param) (stmtHandle, error) {
 	if err != nil {
 		return 0, err
 	}
-	if err := h.execute(params); err != nil {
+	types, err := h.paramTypes()
+	if err == nil {
+		var params []param
+		if params, err = toParams(args, types); err == nil {
+			err = h.execute(params)
+		}
+	}
+	if err != nil {
 		_ = h.free()
 		return 0, err
 	}
 
 	return h, nil
+}
+
+// savepointPattern is a ROLLBACK TO SAVEPOINT statement, and the name of the
+// savepoint (a regular or delimited identifier).
+var savepointPattern = regexp.MustCompile(
+	`(?is)^\s*ROLLBACK\s+(?:WORK\s+)?TO\s+SAVEPOINT\s+([A-Za-z_][A-Za-z0-9_]*|"(?:[^"]|"")+")\s*;?\s*$`)
+
+// rollbackToSavepoint is the name of the savepoint if query is a ROLLBACK TO
+// SAVEPOINT statement. libvsql doesn't execute it as a statement, since it
+// ends (part of) a transaction, which is done with SQLEndTran instead.
+func rollbackToSavepoint(query string) (string, bool) {
+	m := savepointPattern.FindStringSubmatch(query)
+	if m == nil {
+		return "", false
+	}
+
+	return m[1], true
 }
 
 // result is the result of a statement that was executed, which closes the

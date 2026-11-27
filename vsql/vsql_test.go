@@ -1,10 +1,12 @@
 package vsql_test
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"errors"
 	"fmt"
+	"math"
 	"math/big"
 	"path/filepath"
 	"reflect"
@@ -86,6 +88,17 @@ func TestColumnValues(t *testing.T) {
 		{"CAST(NULL AS INTEGER)", nil, "INTEGER", sql.NullInt32{}},
 		{"CAST(NULL AS BOOLEAN)", nil, "BOOLEAN", sql.NullBool{}},
 		{"CAST(NULL AS DATE)", nil, "DATE", sql.NullTime{}},
+		{"CAST(1.25 AS DECFLOAT)", "1.25", "DECFLOAT", sql.NullString{}},
+		{"CAST('large' AS CHARACTER LARGE OBJECT)", "large", "CHARACTER LARGE OBJECT", sql.NullString{}},
+		{"CAST(X'0102' AS BINARY(3))", []byte{1, 2, 0}, "BINARY", []byte(nil)},
+		{"CAST(X'00ff' AS VARBINARY(10))", []byte{0, 0xff}, "BINARY VARYING", []byte(nil)},
+		{"CAST(X'' AS VARBINARY(10))", []byte{}, "BINARY VARYING", []byte(nil)},
+		{"CAST(X'abcdef' AS BLOB)", []byte{0xab, 0xcd, 0xef}, "BINARY LARGE OBJECT", []byte(nil)},
+		{"CAST(NULL AS BLOB)", nil, "BINARY LARGE OBJECT", []byte(nil)},
+		{"INTERVAL '1-2' YEAR TO MONTH", "1-02", "INTERVAL YEAR TO MONTH", sql.NullString{}},
+		{"INTERVAL '-3' DAY", "-3", "INTERVAL DAY", sql.NullString{}},
+		{"INTERVAL '3 04:05:06.5' DAY TO SECOND(3)", "3 04:05:06.500", "INTERVAL DAY TO SECOND", sql.NullString{}},
+		{"INTERVAL '90' MINUTE", "90", "INTERVAL MINUTE", sql.NullString{}},
 	} {
 		t.Run(test.expr, func(t *testing.T) {
 			rows, err := db.Query("VALUES " + test.expr)
@@ -119,7 +132,7 @@ func TestColumnValues(t *testing.T) {
 				if !gotTime.Equal(want) || gotOffset != wantOffset {
 					t.Errorf("got %v, want %v", gotTime, want)
 				}
-			} else if got != test.want {
+			} else if !reflect.DeepEqual(got, test.want) {
 				t.Errorf("got %#v, want %#v", got, test.want)
 			}
 		})
@@ -128,7 +141,8 @@ func TestColumnValues(t *testing.T) {
 
 func TestColumnTypes(t *testing.T) {
 	db := openMemory(t)
-	exec(t, db, "CREATE TABLE foo (a INTEGER NOT NULL, b VARCHAR(20), c NUMERIC(10, 3))")
+	exec(t, db, `CREATE TABLE foo (a INTEGER NOT NULL, b VARCHAR(20), c NUMERIC(10, 3),
+		d VARBINARY(16), e BINARY(4), f BLOB(1000), g BLOB, h CLOB(100), i CLOB)`)
 
 	rows, err := db.Query("SELECT * FROM foo")
 	if err != nil {
@@ -140,7 +154,7 @@ func TestColumnTypes(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if names := fmt.Sprint(rows.Columns()); names != "[A B C] <nil>" {
+	if names := fmt.Sprint(rows.Columns()); names != "[A B C D E F G H I] <nil>" {
 		t.Errorf("columns are %s", names)
 	}
 	if nullable, ok := types[0].Nullable(); nullable || !ok {
@@ -158,6 +172,14 @@ func TestColumnTypes(t *testing.T) {
 	if precision, scale, ok := types[2].DecimalSize(); precision != 10 || scale != 3 || !ok {
 		t.Errorf("C has precision %d and scale %d (%v)", precision, scale, ok)
 	}
+	for i, want := range []int64{16, 4, 1000, math.MaxInt64, 100, math.MaxInt64} {
+		if length, ok := types[3+i].Length(); length != want || !ok {
+			t.Errorf("%s has length %d (%v), want %d", types[3+i].Name(), length, ok, want)
+		}
+	}
+	if scanType := types[3].ScanType(); scanType != reflect.TypeOf([]byte(nil)) {
+		t.Errorf("D has ScanType %s", scanType)
+	}
 }
 
 func TestParameters(t *testing.T) {
@@ -165,7 +187,9 @@ func TestParameters(t *testing.T) {
 	exec(t, db, `CREATE TABLE foo (
 		s SMALLINT, i INTEGER, b BIGINT, r REAL, d DOUBLE PRECISION,
 		n NUMERIC(20, 5), c VARCHAR(100), bo BOOLEAN,
-		ts TIMESTAMP(6), tz TIMESTAMP(6) WITH TIME ZONE, dt DATE)`)
+		ts TIMESTAMP(6), tz TIMESTAMP(6) WITH TIME ZONE, dt DATE,
+		vb VARBINARY(100), bl BLOB, cl CLOB, df DECFLOAT,
+		ym INTERVAL YEAR TO MONTH, ds INTERVAL DAY TO SECOND(6))`)
 	ts := time.Date(2022, 1, 2, 15, 4, 5, 123456000, time.FixedZone("", -4*3600))
 
 	for _, test := range []struct {
@@ -193,6 +217,16 @@ func TestParameters(t *testing.T) {
 		{"c", nil, nil},
 		{"bo", nil, nil},
 		{"dt", nil, nil},
+		{"vb", []byte{0, 1, 0xff}, []byte{0, 1, 0xff}},
+		{"vb", []byte{}, []byte{}},
+		{"vb", []byte(nil), nil},
+		{"bl", []byte("blob"), []byte("blob")},
+		{"cl", "clob", "clob"},
+		{"cl", []byte("clob"), "clob"},
+		{"df", "1.25", "1.25"},
+		{"df", big.NewRat(-5, 4), "-1.25"},
+		{"ym", "1-2", "1-02"},
+		{"ds", "3 04:05:06.5", "3 04:05:06.500000"},
 	} {
 		t.Run(fmt.Sprintf("%s %#v", test.column, test.arg), func(t *testing.T) {
 			exec(t, db, "DELETE FROM foo")
@@ -207,7 +241,7 @@ func TestParameters(t *testing.T) {
 				if !gotTime.Equal(want) {
 					t.Errorf("got %v, want %v", gotTime, want)
 				}
-			} else if got != test.want {
+			} else if !reflect.DeepEqual(got, test.want) {
 				t.Errorf("got %#v, want %#v", got, test.want)
 			}
 		})
@@ -235,6 +269,48 @@ func TestParameters(t *testing.T) {
 		}
 		if c != "b" {
 			t.Errorf("got %q", c)
+		}
+	})
+
+	t.Run("WHERE binary", func(t *testing.T) {
+		exec(t, db, "DELETE FROM foo")
+		exec(t, db, "INSERT INTO foo (i, vb, c) VALUES (?, ?, ?)", 1, []byte{1}, "a")
+		exec(t, db, "INSERT INTO foo (i, vb, c) VALUES (?, ?, ?)", 2, []byte{2}, "b")
+		var i int
+		if err := db.QueryRow("SELECT i FROM foo WHERE vb = ?", []byte{2}).Scan(&i); err != nil {
+			t.Fatal(err)
+		}
+		if i != 2 {
+			t.Errorf("got %d", i)
+		}
+		// []byte is a string for a character parameter.
+		if err := db.QueryRow("SELECT i FROM foo WHERE c = ?", []byte("a")).Scan(&i); err != nil {
+			t.Fatal(err)
+		}
+		if i != 1 {
+			t.Errorf("got %d", i)
+		}
+	})
+
+	t.Run("binary type mismatch", func(t *testing.T) {
+		_, err := db.Exec("INSERT INTO foo (vb) VALUES (?)", "not bytes")
+		if state := sqlState(err); state != vsql.RestrictedDataTypeAttributeViolationError {
+			t.Errorf("got %v", err)
+		}
+	})
+
+	t.Run("number of parameters", func(t *testing.T) {
+		stmt, err := db.Prepare("INSERT INTO foo (i, c) VALUES (?, ?)")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer stmt.Close()
+		_, err = stmt.Exec(1)
+		if err == nil || !strings.Contains(err.Error(), "expected 2 arguments, got 1") {
+			t.Errorf("got %v", err)
+		}
+		if _, err := stmt.Exec(1, "a"); err != nil {
+			t.Error(err)
 		}
 	})
 
@@ -294,6 +370,80 @@ func TestLongStrings(t *testing.T) {
 		if got != want {
 			t.Errorf("%d: got %d octets, want %d", n, len(got), len(want))
 		}
+	}
+}
+
+func TestLongBinary(t *testing.T) {
+	db := openMemory(t)
+	exec(t, db, "CREATE TABLE foo (b BLOB)")
+
+	for _, n := range []int{255, 256, 257, 1000, 100000} {
+		want := make([]byte, n)
+		for i := range want {
+			want[i] = byte(i * 7)
+		}
+		exec(t, db, "DELETE FROM foo")
+		exec(t, db, "INSERT INTO foo (b) VALUES (?)", want)
+
+		var got []byte
+		if err := db.QueryRow("SELECT b FROM foo").Scan(&got); err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(got, want) {
+			t.Errorf("%d: got %d octets", n, len(got))
+		}
+	}
+}
+
+func TestErrorFields(t *testing.T) {
+	db := openMemory(t)
+	exec(t, db, `CREATE TABLE foo (id INTEGER PRIMARY KEY,
+		x INTEGER CONSTRAINT x_positive CHECK (x > 0))`)
+	exec(t, db, "INSERT INTO foo (id, x) VALUES (1, 1)")
+
+	vsqlError := func(err error) *vsql.Error {
+		t.Helper()
+		var e *vsql.Error
+		if !errors.As(err, &e) {
+			t.Fatalf("got %v", err)
+		}
+		return e
+	}
+
+	_, err := db.Exec("INSERT INTO foo (id, x) VALUES (1, 2)")
+	e := vsqlError(err)
+	if e.SQLState != vsql.UniqueViolationError || e.ConstraintSchema != "PUBLIC" ||
+		e.ConstraintName != "FOO_PRIMARY_KEY" || e.SchemaName != "PUBLIC" || e.TableName != "FOO" {
+		t.Errorf("got %#v", e)
+	}
+
+	_, err = db.Exec("INSERT INTO foo (id, x) VALUES (2, -1)")
+	e = vsqlError(err)
+	if e.SQLState != vsql.CheckViolationError || e.ConstraintName != "X_POSITIVE" || e.TableName != "FOO" {
+		t.Errorf("got %#v", e)
+	}
+
+	_, err = db.Exec("SELECT * FROM bar")
+	e = vsqlError(err)
+	if e.TableName != "BAR" || e.ConstraintName != "" {
+		t.Errorf("got %#v", e)
+	}
+
+	_, err = db.Exec("SELECT y FROM foo")
+	e = vsqlError(err)
+	if e.ColumnName != "Y" || e.TableName != "" {
+		t.Errorf("got %#v", e)
+	}
+}
+
+func TestBuild(t *testing.T) {
+	info, err := vsql.Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(info.Version, "v1.") || len(info.Commit) != 40 || len(info.Date) != 10 ||
+		info.VVersion == "" || info.CCompiler == "" || info.OS == "" || info.Machine == "" {
+		t.Errorf("got %#v", info)
 	}
 }
 
@@ -504,6 +654,86 @@ func TestTransactions(t *testing.T) {
 		if err == nil {
 			t.Error("Snapshot isn't an error")
 		}
+	})
+
+	t.Run("default is SERIALIZABLE", func(t *testing.T) {
+		tx, err := db.Begin()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer tx.Rollback()
+		if _, err := tx.Exec("INSERT INTO foo (x) VALUES (5)"); err != nil {
+			t.Fatal(err)
+		}
+		// Another connection can't change the database until the
+		// transaction ends, so it times out (after 5 seconds).
+		_, err = db.Exec("INSERT INTO foo (x) VALUES (6)")
+		if state := sqlState(err); state != vsql.SerializationFailureError {
+			t.Errorf("got %v", err)
+		}
+	})
+
+	t.Run("read only", func(t *testing.T) {
+		tx, err := db.BeginTx(context.Background(), &sql.TxOptions{ReadOnly: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer tx.Rollback()
+		var n int
+		if err := tx.QueryRow("SELECT COUNT(*) FROM foo").Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tx.Exec("DELETE FROM foo"); sqlState(err) != vsql.ReadOnlyTransactionError {
+			t.Errorf("got %v", err)
+		}
+	})
+
+	t.Run("savepoints", func(t *testing.T) {
+		tx, err := db.Begin()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer tx.Rollback()
+		txCount := func() int {
+			t.Helper()
+			var n int
+			if err := tx.QueryRow("SELECT COUNT(*) FROM foo").Scan(&n); err != nil {
+				t.Fatal(err)
+			}
+			return n
+		}
+		txExec := func(query string) {
+			t.Helper()
+			if _, err := tx.Exec(query); err != nil {
+				t.Fatalf("%s: %v", query, err)
+			}
+		}
+
+		before := txCount()
+		txExec("INSERT INTO foo (x) VALUES (10)")
+		txExec("SAVEPOINT a")
+		txExec("INSERT INTO foo (x) VALUES (11)")
+		txExec(`SAVEPOINT "b c"`)
+		txExec("INSERT INTO foo (x) VALUES (12)")
+		txExec(`ROLLBACK TO SAVEPOINT "b c"`)
+		if n := txCount(); n != before+2 {
+			t.Errorf("got %d rows, want %d", n, before+2)
+		}
+		txExec("rollback work to savepoint A;")
+		if n := txCount(); n != before+1 {
+			t.Errorf("got %d rows, want %d", n, before+1)
+		}
+		txExec("RELEASE SAVEPOINT a")
+		if _, err := tx.Exec("ROLLBACK TO SAVEPOINT a"); sqlState(err) != vsql.InvalidSavepointSpecificationError {
+			t.Errorf("got %v", err)
+		}
+		if err := tx.Commit(); err != nil {
+			t.Fatal(err)
+		}
+		if n := count(); n != before+1 {
+			t.Errorf("got %d rows, want %d", n, before+1)
+		}
+		exec(t, db, "DELETE FROM foo WHERE x = 10")
 	})
 
 	t.Run("canceled", func(t *testing.T) {

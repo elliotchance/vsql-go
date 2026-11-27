@@ -11,6 +11,7 @@ type stmt struct {
 	c      *conn
 	h      stmtHandle
 	query  string
+	types  []int
 	rows   *rows
 	closed bool
 }
@@ -31,9 +32,10 @@ func (s *stmt) Close() error {
 	return s.h.free()
 }
 
-// NumInput is -1, since libvsql doesn't describe the parameters.
+// NumInput is the number of dynamic parameters, which libvsql describes when
+// the statement is prepared.
 func (s *stmt) NumInput() int {
-	return -1
+	return len(s.types)
 }
 
 func (s *stmt) Exec(args []driver.Value) (driver.Result, error) {
@@ -52,7 +54,7 @@ func (s *stmt) ExecContext(ctx context.Context, args []driver.NamedValue) (drive
 		return nil, err
 	}
 
-	params, err := toParams(args)
+	params, err := toParams(args, s.types)
 	if err != nil {
 		return nil, err
 	}
@@ -71,7 +73,7 @@ func (s *stmt) QueryContext(ctx context.Context, args []driver.NamedValue) (driv
 		return nil, err
 	}
 
-	params, err := toParams(args)
+	params, err := toParams(args, s.types)
 	if err != nil {
 		return nil, err
 	}

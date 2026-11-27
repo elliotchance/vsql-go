@@ -15,6 +15,28 @@
 // db.BeginTx. START TRANSACTION, COMMIT and ROLLBACK can't be executed as
 // statements.
 //
+// # Transactions
+//
+// sql.LevelDefault is SERIALIZABLE, which is vsql's default (and the SQL
+// standard's), so it's the same as a statement outside a transaction. Only
+// one READ WRITE SERIALIZABLE transaction can be active at a time, so another
+// connection that changes the database waits for it to end (for up to 5
+// seconds, then it's a 40001 serialization failure). REPEATABLE READ
+// runs as SERIALIZABLE, READ UNCOMMITTED is always READ ONLY, and
+// sql.TxOptions.ReadOnly starts a READ ONLY transaction. See
+// https://vsql.readthedocs.io/en/latest/transactions.html
+//
+// A transaction can have savepoints, which are SQL statements:
+//
+//	tx, err := db.Begin()
+//	_, err = tx.Exec("SAVEPOINT a")
+//	_, err = tx.Exec("INSERT INTO foo (x) VALUES (1)")
+//	_, err = tx.Exec("ROLLBACK TO SAVEPOINT a") // or RELEASE SAVEPOINT a
+//	err = tx.Commit()
+//
+// ROLLBACK TO SAVEPOINT must be executed (with Exec, and without parameters)
+// by itself, since the driver does it with SQLEndTran.
+//
 // # Parameters
 //
 // Parameters are "?" (named parameters are not supported). Each Go type is
@@ -24,7 +46,8 @@
 //	int64 (and int, ...) BIGINT
 //	float64, float32     DOUBLE PRECISION
 //	bool                 BOOLEAN
-//	string, []byte       CHARACTER VARYING
+//	string               CHARACTER VARYING
+//	[]byte               BINARY VARYING (or CHARACTER VARYING, see below)
 //	time.Time            TIMESTAMP(6) WITH TIME ZONE
 //	*big.Int             NUMERIC
 //	*big.Rat             NUMERIC (it must be a finite decimal)
@@ -32,6 +55,18 @@
 // A type that implements driver.Valuer (such as a decimal type) is sent as the
 // value it returns. A TIMESTAMP WITH TIME ZONE can't be assigned to a DATE or
 // TIME column, so use CAST(? AS DATE) or CAST(? AS TIME).
+//
+// vsql determines the type of each parameter when the statement is prepared
+// (such as the type of x in "x = ?"), so a prepared statement checks the
+// number of arguments, and a parameter whose type can't be determined (such as
+// in "? + ?") is a syntax error. A binary string can't be cast to (or from)
+// anything else, so a []byte is sent as a CHARACTER VARYING for a parameter
+// that isn't a binary string, and a nil []byte is NULL. A string can't be
+// used for a binary string parameter (07006).
+//
+// DECFLOAT and INTERVAL parameters are strings, such as "1.25" or "1-2" (for
+// INTERVAL YEAR TO MONTH) and "3 04:05:06.5" (for INTERVAL DAY TO SECOND). A
+// CHARACTER LARGE OBJECT is a string.
 //
 // # Columns
 //
@@ -43,17 +78,39 @@
 //	REAL                       float64   float32
 //	DOUBLE PRECISION           float64   float64
 //	DECIMAL, NUMERIC           string    string
+//	DECFLOAT                   string    string
 //	CHARACTER, VARCHAR         string    string
+//	CHARACTER LARGE OBJECT     string    string
+//	BINARY, BINARY VARYING     []byte    []byte
+//	BINARY LARGE OBJECT        []byte    []byte
 //	BOOLEAN                    bool      bool
 //	DATE                       time.Time time.Time
 //	TIME (WITH TIME ZONE)      time.Time time.Time
 //	TIMESTAMP (WITH TIME ZONE) time.Time time.Time
+//	INTERVAL ...               string    string
 //
 // The ScanType of a nullable column is the sql.Null type (such as
-// sql.NullInt32). DECIMAL and NUMERIC are exact, so they're a string that can
+// sql.NullInt32), except for a binary string, which is a nil []byte when it's
+// NULL. DECIMAL, NUMERIC and DECFLOAT are exact, so they're a string that can
 // be scanned into a decimal type (or a float64). A DATE, TIME or TIMESTAMP is
 // in UTC (WITH TIME ZONE has the offset as its location), and a TIME is on
-// January 1, year 0.
+// January 1, year 0. An INTERVAL is the string in its literal, such as "1-02"
+// for INTERVAL '1-02' YEAR(2) TO MONTH, and its DatabaseTypeName (such as
+// "INTERVAL YEAR TO MONTH") has its fields.
+//
+// The Length of a column type is the maximum number of characters of a
+// character string, or the maximum number of octets of a binary string
+// (math.MaxInt64 for no maximum). DecimalSize is the precision and scale of a
+// DECIMAL or NUMERIC.
+//
+// # Errors
+//
+// An error from vsql is an *Error, with the SQLSTATE and, when they apply, the
+// constraint, table, column or cursor of the condition (see Error).
+//
+// # Build
+//
+// Build describes the version of libvsql that's compiled into the package.
 package vsql
 
 import (
