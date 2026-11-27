@@ -1,6 +1,7 @@
 package vsql
 
 import (
+	"context"
 	"database/sql"
 	"database/sql/driver"
 	"fmt"
@@ -14,7 +15,10 @@ import (
 // rows is the cursor of a query. If it's from a prepared statement, the
 // statement's handle is only freed when both are closed, otherwise the rows
 // free their own handle.
+//
+// Fetching a row is canceled if the context of the query is done.
 type rows struct {
+	ctx     context.Context
 	h       stmtHandle
 	stmt    *stmt
 	columns []column
@@ -31,13 +35,13 @@ var (
 	_ driver.RowsColumnTypePrecisionScale   = (*rows)(nil)
 )
 
-func newRows(h stmtHandle, s *stmt) (*rows, error) {
+func newRows(ctx context.Context, h stmtHandle, s *stmt) (*rows, error) {
 	n, err := h.numResultCols()
 	if err != nil {
 		return nil, err
 	}
 
-	r := &rows{h: h, stmt: s, columns: make([]column, n)}
+	r := &rows{ctx: ctx, h: h, stmt: s, columns: make([]column, n)}
 	for i := range r.columns {
 		if r.columns[i], err = h.describeCol(i + 1); err != nil {
 			return nil, err
@@ -90,7 +94,7 @@ func (r *rows) Next(dest []driver.Value) error {
 		return io.EOF
 	}
 
-	ok, err := r.h.fetch()
+	ok, err := r.h.fetch(r.ctx)
 	if err != nil {
 		return err
 	}

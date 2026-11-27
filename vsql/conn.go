@@ -174,7 +174,7 @@ func (c *conn) ExecContext(ctx context.Context, query string, args []driver.Name
 		}
 	}
 
-	h, err := c.run(query, args)
+	h, err := c.run(ctx, query, args)
 	if err != nil {
 		return nil, err
 	}
@@ -188,12 +188,12 @@ func (c *conn) QueryContext(ctx context.Context, query string, args []driver.Nam
 		return nil, err
 	}
 
-	h, err := c.run(query, args)
+	h, err := c.run(ctx, query, args)
 	if err != nil {
 		return nil, err
 	}
 
-	r, err := newRows(h, nil)
+	r, err := newRows(ctx, h, nil)
 	if err != nil {
 		_ = h.free()
 		return nil, err
@@ -203,13 +203,14 @@ func (c *conn) QueryContext(ctx context.Context, query string, args []driver.Nam
 }
 
 // run executes a statement on a new statement handle, which must be freed.
-func (c *conn) run(query string, args []driver.NamedValue) (stmtHandle, error) {
+// It's canceled if ctx is done.
+func (c *conn) run(ctx context.Context, query string, args []driver.NamedValue) (stmtHandle, error) {
 	if len(args) == 0 {
 		h, err := c.dbc.allocStmt()
 		if err != nil {
 			return 0, err
 		}
-		if err := h.execDirect(query); err != nil {
+		if err := h.execDirect(ctx, query); err != nil {
 			_ = h.free()
 			return 0, err
 		}
@@ -225,7 +226,7 @@ func (c *conn) run(query string, args []driver.NamedValue) (stmtHandle, error) {
 	if err == nil {
 		var params []param
 		if params, err = toParams(args, types); err == nil {
-			err = h.execute(params)
+			err = h.execute(ctx, params)
 		}
 	}
 	if err != nil {

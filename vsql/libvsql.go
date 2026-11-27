@@ -19,6 +19,7 @@ package vsql
 import "C"
 
 import (
+	"context"
 	"errors"
 	"unsafe"
 )
@@ -259,12 +260,46 @@ func (h stmtHandle) free() error {
 	return h.check(C.SQLFreeHandle(C.SQL_HANDLE_STMT, C.SQLINTEGER(h)))
 }
 
-func (h stmtHandle) execDirect(query string) error {
+// operationCanceled is the SQLSTATE of a routine that was canceled by
+// SQLCancel.
+const operationCanceled SQLState = "HY008"
+
+// cancelable calls a routine that runs on the statement (such as SQLExecute),
+// and cancels it with SQLCancel (from another goroutine) if ctx is done before
+// it returns. The statement stops soon after, even if it's waiting for
+// another connection's transaction, and the error is ctx.Err(). The canceled
+// statement has no effect, and its transaction continues.
+//
+// If ctx is done just before the routine starts, SQLCancel has nothing to
+// cancel, so the routine runs as usual.
+func (h stmtHandle) cancelable(ctx context.Context, routine func() error) error {
+	canceled := make(chan struct{})
+	stop := context.AfterFunc(ctx, func() {
+		defer close(canceled)
+		C.SQLCancel(C.SQLHSTMT(h))
+	})
+	err := routine()
+	if !stop() {
+		// SQLCancel was called (or is being called), and it has to return
+		// before anything else uses the handle.
+		<-canceled
+		var e *Error
+		if errors.As(err, &e) && e.SQLState == operationCanceled {
+			return ctx.Err()
+		}
+	}
+
+	return err
+}
+
+func (h stmtHandle) execDirect(ctx context.Context, query string) error {
 	cquery := C.CString(query)
 	defer C.free(unsafe.Pointer(cquery))
 
-	return h.check(C.SQLExecDirect(C.SQLHSTMT(h), (*C.SQLCHAR)(unsafe.Pointer(cquery)),
-		C.SQLINTEGER(len(query))))
+	return h.cancelable(ctx, func() error {
+		return h.check(C.SQLExecDirect(C.SQLHSTMT(h), (*C.SQLCHAR)(unsafe.Pointer(cquery)),
+			C.SQLINTEGER(len(query))))
+	})
 }
 
 func (h stmtHandle) prepare(query string) error {
@@ -327,8 +362,9 @@ func (h stmtHandle) paramTypes() ([]int, error) {
 }
 
 // execute executes the prepared statement with the parameters, which are
-// bound for this execution only.
-func (h stmtHandle) execute(params []param) error {
+// bound for this execution only. It's canceled if ctx is done (see
+// cancelable).
+func (h stmtHandle) execute(ctx context.Context, params []param) error {
 	// The values must stay allocated until SQLExecute has read them.
 	var allocated []unsafe.Pointer
 	defer func() {
@@ -387,7 +423,9 @@ func (h stmtHandle) execute(params []param) error {
 		}
 	}
 
-	return h.check(C.SQLExecute(C.SQLHSTMT(h)))
+	return h.cancelable(ctx, func() error {
+		return h.check(C.SQLExecute(C.SQLHSTMT(h)))
+	})
 }
 
 func (h stmtHandle) rowCount() (int64, error) {
@@ -502,14 +540,18 @@ func (h stmtHandle) describeCol(n int) (column, error) {
 	}
 }
 
-// fetch moves to the next row, it's false after the last row.
-func (h stmtHandle) fetch() (bool, error) {
-	rc := C.SQLFetch(C.SQLHSTMT(h))
-	if rc == C.SQL_NO_DATA {
-		return false, nil
-	}
+// fetch moves to the next row, it's false after the last row. It's canceled
+// if ctx is done (see cancelable).
+func (h stmtHandle) fetch(ctx context.Context) (bool, error) {
+	ok := true
+	err := h.cancelable(ctx, func() error {
+		rc := C.SQLFetch(C.SQLHSTMT(h))
+		ok = rc != C.SQL_NO_DATA
 
-	return true, h.check(rc)
+		return h.check(rc)
+	})
+
+	return ok, err
 }
 
 func (h stmtHandle) closeCursor() error {
