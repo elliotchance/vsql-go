@@ -543,8 +543,13 @@ func (h stmtHandle) getFloat64(n int, real bool, b *buffer) (float64, bool, erro
 // getString reads a column as SQL_CHAR, it's false for a NULL. A string that
 // doesn't fit in the buffer is read in pieces, and the buffer grows to the
 // size of the rest of it.
+//
+// The string can contain NUL bytes, so the length of a piece isn't found with
+// strlen. It's the length that ind had before the piece was read, less the
+// length it has after.
 func (h stmtHandle) getString(n int, b *buffer) (string, bool, error) {
-	var s []byte
+	var s, piece []byte
+	pieceInd := 0
 	for {
 		rc := C.SQLGetData(C.SQLHSTMT(h), C.SQLSMALLINT(n), C.SQL_CHAR, C.SQLPOINTER(b.data),
 			C.SQLINTEGER(b.size), b.ind)
@@ -554,15 +559,18 @@ func (h stmtHandle) getString(n int, b *buffer) (string, bool, error) {
 		if *b.ind == C.SQL_NULL_DATA {
 			return "", false, nil
 		}
+		if piece != nil {
+			s = append(s, piece[:pieceInd-int(*b.ind)]...)
+			piece = nil
+		}
 
 		// The rest of the string (ind) didn't fit, so the buffer has a null
 		// terminated piece of it.
 		if rc == C.SQL_SUCCESS_WITH_INFO && int(*b.ind) >= b.size {
-			piece := C.GoString((*C.char)(b.data))
-			s = append(s, piece...)
-			rest := int(*b.ind) - len(piece)
+			piece = C.GoBytes(b.data, C.int(b.size-1))
+			pieceInd = int(*b.ind)
 			C.free(b.data)
-			b.size = rest + 1
+			b.size = pieceInd + 1
 			b.data = C.malloc(C.size_t(b.size))
 			continue
 		}
