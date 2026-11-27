@@ -723,6 +723,30 @@ func TestTransactions(t *testing.T) {
 		if n := txCount(); n != before+1 {
 			t.Errorf("got %d rows, want %d", n, before+1)
 		}
+		txExec("SAVEPOINT b")
+		txExec("INSERT INTO foo (x) VALUES (13)")
+		txExec("/* undo */ ROLLBACK -- to\n TO SAVEPOINT b; -- done")
+		if n := txCount(); n != before+1 {
+			t.Errorf("got %d rows, want %d", n, before+1)
+		}
+		txExec("SAVEPOINT c")
+		txExec("INSERT INTO foo (x) VALUES (14)")
+		stmt, err := tx.Prepare("ROLLBACK TO SAVEPOINT C")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := stmt.Exec(); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := stmt.Query(); err == nil {
+			t.Error("Query of ROLLBACK TO SAVEPOINT isn't an error")
+		}
+		if err := stmt.Close(); err != nil {
+			t.Error(err)
+		}
+		if n := txCount(); n != before+1 {
+			t.Errorf("got %d rows, want %d", n, before+1)
+		}
 		txExec("RELEASE SAVEPOINT a")
 		if _, err := tx.Exec("ROLLBACK TO SAVEPOINT a"); sqlState(err) != vsql.InvalidSavepointSpecificationError {
 			t.Errorf("got %v", err)

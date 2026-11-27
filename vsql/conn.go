@@ -130,6 +130,10 @@ func (c *conn) PrepareContext(ctx context.Context, query string) (driver.Stmt, e
 		return nil, err
 	}
 
+	if name, ok := rollbackToSavepoint(query); ok {
+		return &stmt{c: c, query: query, savepoint: name}, nil
+	}
+
 	h, err := c.prepare(query)
 	if err != nil {
 		return nil, err
@@ -233,9 +237,15 @@ func (c *conn) run(query string, args []driver.NamedValue) (stmtHandle, error) {
 }
 
 // savepointPattern is a ROLLBACK TO SAVEPOINT statement, and the name of the
-// savepoint (a regular or delimited identifier).
-var savepointPattern = regexp.MustCompile(
-	`(?is)^\s*ROLLBACK\s+(?:WORK\s+)?TO\s+SAVEPOINT\s+([A-Za-z_][A-Za-z0-9_]*|"(?:[^"]|"")+")\s*;?\s*$`)
+// savepoint (a regular or delimited identifier). There can be comments before,
+// between and after the keywords.
+var savepointPattern = func() *regexp.Regexp {
+	space := `(?:\s|--[^\n]*(?:\n|$)|/\*.*?\*/)`
+	identifier := `[A-Za-z_][A-Za-z0-9_]*|"(?:[^"]|"")+"`
+
+	return regexp.MustCompile(`(?is)^` + space + `*ROLLBACK` + space + `+(?:WORK` + space + `+)?TO` +
+		space + `+SAVEPOINT` + space + `+(` + identifier + `)` + space + `*;?` + space + `*$`)
+}()
 
 // rollbackToSavepoint is the name of the savepoint if query is a ROLLBACK TO
 // SAVEPOINT statement. libvsql doesn't execute it as a statement, since it

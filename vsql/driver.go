@@ -34,8 +34,9 @@
 //	_, err = tx.Exec("ROLLBACK TO SAVEPOINT a") // or RELEASE SAVEPOINT a
 //	err = tx.Commit()
 //
-// ROLLBACK TO SAVEPOINT must be executed (with Exec, and without parameters)
-// by itself, since the driver does it with SQLEndTran.
+// ROLLBACK TO SAVEPOINT must be executed with Exec (or a prepared statement's
+// Exec), without parameters, and by itself, since the driver does it with
+// SQLEndTran.
 //
 // # Parameters
 //
